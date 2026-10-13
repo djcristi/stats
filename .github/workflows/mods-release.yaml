@@ -28,6 +28,7 @@ concurrency:
 
 env:
   UPSTREAM: https://github.com/exelban/stats.git
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   release:
