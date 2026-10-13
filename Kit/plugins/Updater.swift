@@ -40,7 +40,11 @@ public class Updater {
     private let server: URL
     
     private let appName: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as! String
-    private let currentVersion: String = "v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String)"
+    private let currentVersion: String = {
+        let version = "v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String)"
+        let revision = Int(Bundle.main.object(forInfoDictionaryKey: "ModRevision") as? String ?? "") ?? 0
+        return revision > 0 ? "\(version)-r\(revision)" : version
+    }()
     
     private var observation: NSKeyValueObservation?
     private var expectedDigest: String? = nil
@@ -96,10 +100,24 @@ public class Updater {
             completion(version_s(
                 current: self.currentVersion,
                 latest: result.tag,
-                newest: isNewestVersion(currentVersion: self.currentVersion, latestVersion: result.tag),
+                newest: Updater.isNewer(current: self.currentVersion, latest: result.tag),
                 url: result.url
             ), nil)
         }
+    }
+    
+    // Mod builds are tagged "v3.0.21-r7": upstream version first, mod revision as the tiebreaker.
+    internal static func splitRevision(_ value: String) -> (base: String, revision: Int) {
+        guard let range = value.range(of: #"-r\d+$"#, options: .regularExpression) else { return (value, 0) }
+        return (String(value[..<range.lowerBound]), Int(value[range].dropFirst(2)) ?? 0)
+    }
+    
+    internal static func isNewer(current: String, latest: String) -> Bool {
+        let cur = self.splitRevision(current)
+        let lat = self.splitRevision(latest)
+        if isNewestVersion(currentVersion: cur.base, latestVersion: lat.base) { return true }
+        let normalize: (String) -> String = { $0.replacingOccurrences(of: "v", with: "") }
+        return normalize(cur.base) == normalize(lat.base) && lat.revision > cur.revision
     }
     
     private func fetchRelease(uri: URL, completion: @escaping (_ result: (tag: String, url: String)?, _ error: Error?) -> Void) {
@@ -120,7 +138,7 @@ public class Updater {
                     return
                 }
                 
-                // release tags look like "mods-v3.0.21"
+                // release tags look like "mods-v3.0.21-r7"
                 let lastVersion = tagName.hasPrefix("mods-") ? String(tagName.dropFirst("mods-".count)) : tagName
                 self.expectedDigest = (asset["digest"] as? String)?.replacingOccurrences(of: "sha256:", with: "").lowercased()
                 completion((lastVersion, downloadURL), nil)
