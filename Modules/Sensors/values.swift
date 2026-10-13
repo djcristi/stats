@@ -632,7 +632,7 @@ internal let SensorsList: [Sensor] = [
     Sensor(key: "PU1R", name: "Thunderbolt Left", group: .sensor, type: .power, platforms: Platform.all),
     Sensor(key: "PU2R", name: "Thunderbolt Right", group: .sensor, type: .power, platforms: Platform.all),
     
-    Sensor(key: "PDBR", name: "Power Delivery Brightness", group: .sensor, type: .power, platforms: Platform.m1Gen + Platform.m4Gen),
+    Sensor(key: "PDBR", name: "Power Delivery Brightness", group: .sensor, type: .power, platforms: Platform.m1Gen + Platform.m3Gen + Platform.m4Gen),
     Sensor(key: "PBwo", name: "Display Backlight", group: .sensor, type: .power, platforms: Platform.m5Gen + [Platform.a18Pro])
 ]
 
