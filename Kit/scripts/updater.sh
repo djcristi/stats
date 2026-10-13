@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eu
 
-DMG_PATH="$HOME/Downloads/Stats.dmg"
+DMG_PATH="$HOME/Downloads/Stats-mod.dmg"
 MOUNT_PATH="/tmp/Stats"
 APPLICATION_PATH="/Applications/"
 LAUNCH_UID=""
@@ -17,8 +17,8 @@ while [[ "$#" -gt 0 ]]; do case "$1" in
   *) echo "Unknown parameter passed: $1"; exit 1;;
 esac; shift; done
 
-APP_DST="${APPLICATION_PATH%/}/Stats.app"
-APP_SRC="${MOUNT_PATH%/}/Stats.app"
+APP_DST="${APPLICATION_PATH%/}/Stats-mod.app"
+APP_SRC="${MOUNT_PATH%/}/Stats-mod.app"
 
 # When the script runs as root (admin auth path) but a target UID was passed,
 # launch the new app back as the original user so it doesn't run as root.
@@ -36,17 +36,17 @@ install_app() {
     staging="$(/usr/bin/mktemp -d "$parent/.Stats-update.XXXXXX")"
 
     if command -v ditto >/dev/null 2>&1; then
-        ditto "$APP_SRC" "$staging/Stats.app"
+        ditto "$APP_SRC" "$staging/Stats-mod.app"
     else
-        cp -Rf "$APP_SRC" "$staging/Stats.app"
+        cp -Rf "$APP_SRC" "$staging/Stats-mod.app"
     fi
 
     old=""
     if [[ -e "$APP_DST" ]]; then
         old="$(/usr/bin/mktemp -d "$parent/.Stats-old.XXXXXX")"
-        mv "$APP_DST" "$old/Stats.app"
+        mv "$APP_DST" "$old/Stats-mod.app"
     fi
-    mv "$staging/Stats.app" "$APP_DST"
+    mv "$staging/Stats-mod.app" "$APP_DST"
 
     rm -rf "$staging"
     if [[ -n "$old" ]]; then
