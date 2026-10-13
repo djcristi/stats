@@ -43,6 +43,7 @@ public class Updater {
     private let currentVersion: String = "v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String)"
     
     private var observation: NSKeyValueObservation?
+    private var expectedDigest: String? = nil
     
     private var lastCheckTS: Int {
         get {
@@ -86,21 +87,9 @@ public class Updater {
             self.lastCheckTS = Int(Date().timeIntervalSince1970)
         }
         
-        self.fetchRelease(uri: self.server) { (result, err) in
+        self.fetchRelease(uri: self.github) { (result, err) in
             guard let result = result, err == nil else {
-                self.fetchRelease(uri: self.github) { (result, err) in
-                    guard let result = result, err == nil else {
-                        completion(nil, err)
-                        return
-                    }
-                    
-                    completion(version_s(
-                        current: self.currentVersion,
-                        latest: result.tag,
-                        newest: isNewestVersion(currentVersion: self.currentVersion, latestVersion: result.tag),
-                        url: result.url
-                    ), nil)
-                }
+                completion(nil, err)
                 return
             }
             
@@ -123,15 +112,18 @@ public class Updater {
             do {
                 let jsonResponse = try JSONSerialization.jsonObject(with: data, options: [])
                 guard let jsonArray = jsonResponse as? [String: Any],
-                      let lastVersion = jsonArray["tag_name"] as? String,
+                      let tagName = jsonArray["tag_name"] as? String,
                       let assets = jsonArray["assets"] as? [[String: Any]],
-                      let asset = assets.first(where: {$0["name"] as? String == "\(self.appName).dmg"}),
+                      let asset = assets.first(where: {$0["name"] as? String == "Stats-mod.dmg"}),
                       let downloadURL = asset["browser_download_url"] as? String else {
                     completion(nil, "parse json")
                     return
                 }
                 
-                 completion((lastVersion, downloadURL), nil)
+                // release tags look like "mods-v3.0.21"
+                let lastVersion = tagName.hasPrefix("mods-") ? String(tagName.dropFirst("mods-".count)) : tagName
+                self.expectedDigest = (asset["digest"] as? String)?.replacingOccurrences(of: "sha256:", with: "").lowercased()
+                completion((lastVersion, downloadURL), nil)
             } catch let parsingError {
                 completion(nil, parsingError)
             }
@@ -182,6 +174,17 @@ public class Updater {
             return
         }
         
+        guard let expected = self.expectedDigest, !expected.isEmpty else {
+            completion("missing SHA-256 digest for the release asset")
+            return
+        }
+        let sum = self.runProcess("/usr/bin/shasum", ["-a", "256", dmg])
+        guard sum.exit == 0, sum.output.split(separator: " ").first.map({ $0.lowercased() }) == expected else {
+            try? FileManager.default.removeItem(atPath: dmg)
+            completion("SHA-256 mismatch for the downloaded DMG")
+            return
+        }
+        
         print("Started new version installation...")
         
         let mountPoint: String
@@ -212,7 +215,7 @@ public class Updater {
         
         print("DMG is mounted at \(mountPoint)")
         
-        let mountedApp = (mountPoint as NSString).appendingPathComponent("Stats.app")
+        let mountedApp = (mountPoint as NSString).appendingPathComponent("Stats-mod.app")
         if let err = self.validateAppSignature(at: mountedApp) {
             _ = self.runProcess("/usr/bin/hdiutil", ["detach", mountPoint, "-force"])
             try? FileManager.default.removeItem(atPath: mountPoint)
@@ -290,23 +293,6 @@ public class Updater {
             return "SecStaticCodeCheckValidity failed (\(status))"
         }
         
-        var selfCode: SecCode?
-        guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let selfCode else {
-            return "SecCodeCopySelf failed"
-        }
-        var selfStatic: SecStaticCode?
-        guard SecCodeCopyStaticCode(selfCode, [], &selfStatic) == errSecSuccess, let selfStatic else {
-            return "SecCodeCopyStaticCode failed"
-        }
-        guard let selfTeam = self.teamID(for: selfStatic) else {
-            return "could not read current team ID"
-        }
-        guard let dmgTeam = self.teamID(for: code) else {
-            return "could not read DMG team ID"
-        }
-        if selfTeam != dmgTeam {
-            return "team ID mismatch: \(selfTeam) vs \(dmgTeam)"
-        }
         return nil
     }
     
