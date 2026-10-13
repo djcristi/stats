@@ -87,10 +87,13 @@ jobs:
         run: |
           xcodebuild -scheme Stats -destination 'platform=macOS' -configuration Release \
             archive -archivePath build/Stats.xcarchive CODE_SIGNING_ALLOWED=NO
-          APP=build/Stats.xcarchive/Products/Applications/Stats.app
-          codesign --force --deep --sign - "$APP"
-          codesign -dv "$APP" 2>&1 | head -3
-          ditto -c -k --keepParent "$APP" "Stats-${{ steps.tag.outputs.tag }}-mods.zip"
+          mkdir -p dist
+          ditto build/Stats.xcarchive/Products/Applications/Stats.app dist/Stats-mod.app
+          codesign --force --deep --sign - dist/Stats-mod.app
+          codesign -dv dist/Stats-mod.app 2>&1 | head -3
+          ditto -c -k --keepParent dist/Stats-mod.app Stats-mod.zip
+          mkdir -p dmgroot && cp -R dist/Stats-mod.app dmgroot/ && ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "Stats-mod" -srcfolder dmgroot -ov -format UDZO Stats-mod.dmg
 
       - name: Publish release
         if: steps.tag.outputs.skip != 'true'
@@ -99,6 +102,6 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           gh release delete "mods-$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "mods-$TAG" "Stats-$TAG-mods.zip" \
-            --title "Stats $TAG + mods" \
-            --notes "Upstream $TAG with the mods branch rebased on top. Ad-hoc signed: run \`xattr -cr Stats.app\` after unzipping."
+          gh release create "mods-$TAG" Stats-mod.dmg Stats-mod.zip \
+            --title "Stats-mod $TAG" \
+            --notes "Upstream $TAG with the mods branch rebased on top. Ad-hoc signed. First install from a browser download: run \`xattr -cr Stats-mod.app\`. Later updates are installed by the app itself."
