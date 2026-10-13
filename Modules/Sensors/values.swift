@@ -667,6 +667,7 @@ internal let SensorsList: [Sensor] = [
     Sensor(key: "PN0C", name: "Northbridge", group: .system, type: .power, platforms: [.intel]),
     
     Sensor(key: "PU1R", name: "Thunderbolt Left", group: .sensor, type: .power, platforms: Platform.all),
+    Sensor(key: "PDBR", name: "Power Delivery Brightness", group: .sensor, type: .power, platforms: Platform.m3Gen), // mod: PDBR on M3 (kept apart from upstream line to avoid rebase conflicts)
     Sensor(key: "PU2R", name: "Thunderbolt Right", group: .sensor, type: .power, platforms: Platform.all),
     
     Sensor(key: "PDBR", name: "Power Delivery Brightness", group: .sensor, type: .power, platforms: Platform.m1Gen + Platform.m4Gen),
