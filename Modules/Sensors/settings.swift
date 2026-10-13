@@ -20,6 +20,16 @@ internal class Settings: NSStackView, Settings_v {
     private var unknownSensorsState: Bool = false
     private var fanValueState: FanValue = .percentage
     private var widgets: [widget_t] = []
+    private enum MiniLabelMode: String {
+        case valueOnly = "valueOnly"
+        case labelAndValue = "labelAndValue"
+    }
+    
+    private enum MiniLabelTextStyle: String {
+        case sensorName = "sensorName"
+        case shortLetters = "shortLetters"
+        case firstLetter = "firstLetter"
+    }
     
     public var callback: (() -> Void) = {}
     public var HIDcallback: (() -> Void) = {}
@@ -31,6 +41,8 @@ internal class Settings: NSStackView, Settings_v {
     private var list: [Sensor_p] = []
     private var sensorsPrefs: PreferencesSection?
     private var selectedSensor: String = "Average System Total"
+    private var miniLabelMode: MiniLabelMode = .labelAndValue
+    private var miniLabelTextStyle: MiniLabelTextStyle = .sensorName
     
     public init(_ module: ModuleType) {
         self.title = module.stringValue
@@ -47,6 +59,8 @@ internal class Settings: NSStackView, Settings_v {
         self.unknownSensorsState = Store.shared.bool(key: "\(self.title)_unknown", defaultValue: self.unknownSensorsState)
         self.fanValueState = FanValue(rawValue: Store.shared.string(key: "\(self.title)_fanValue", defaultValue: self.fanValueState.rawValue)) ?? .percentage
         self.selectedSensor = Store.shared.string(key: "\(self.title)_sensor", defaultValue: self.selectedSensor)
+        self.miniLabelMode = MiniLabelMode(rawValue: Store.shared.string(key: "\(self.title)_miniLabelMode", defaultValue: MiniLabelMode.labelAndValue.rawValue)) ?? .labelAndValue
+        self.miniLabelTextStyle = MiniLabelTextStyle(rawValue: Store.shared.string(key: "\(self.title)_miniLabelTextStyle", defaultValue: MiniLabelTextStyle.sensorName.rawValue)) ?? .sensorName
         
         self.addArrangedSubview(PreferencesSection([
             PreferencesRow(localizedString("Update interval"), component: selectView(
@@ -89,6 +103,24 @@ internal class Settings: NSStackView, Settings_v {
             items: [],
             selected: self.selectedSensor)
         ))
+        sensorsRows.append(PreferencesRow(localizedString("Menu bar view"), id: "mini_label_mode", component: selectView(
+            action: #selector(self.changeMiniLabelMode),
+            items: [
+                KeyValue_t(key: MiniLabelMode.valueOnly.rawValue, value: localizedString("Value only")),
+                KeyValue_t(key: MiniLabelMode.labelAndValue.rawValue, value: localizedString("Label + value"))
+            ],
+            selected: self.miniLabelMode.rawValue
+        )))
+        
+        sensorsRows.append(PreferencesRow(localizedString("Menu bar label text"), id: "mini_label_text_style", component: selectView(
+            action: #selector(self.changeMiniLabelTextStyle),
+            items: [
+                KeyValue_t(key: MiniLabelTextStyle.sensorName.rawValue, value: localizedString("Sensor name")),
+                KeyValue_t(key: MiniLabelTextStyle.shortLetters.rawValue, value: localizedString("A/B/C letters")),
+                KeyValue_t(key: MiniLabelTextStyle.firstLetter.rawValue, value: localizedString("First letter only"))
+            ],
+            selected: self.miniLabelTextStyle.rawValue
+        )))
         let sensorsPrefs = PreferencesSection(sensorsRows)
         self.sensorsPrefs = sensorsPrefs
         self.addArrangedSubview(sensorsPrefs)
@@ -154,6 +186,14 @@ internal class Settings: NSStackView, Settings_v {
                 selected: self.selectedSensor
             ))
         }
+        
+        if let row = self.sensorsPrefs?.findRow("mini_label_mode"), !widgets.isEmpty {
+            self.sensorsPrefs?.setRowVisibility(row, newState: widgets.contains(where: { $0 == .mini }))
+        }
+        
+        if let row = self.sensorsPrefs?.findRow("mini_label_text_style"), !widgets.isEmpty {
+            self.sensorsPrefs?.setRowVisibility(row, newState: widgets.contains(where: { $0 == .mini || $0 == .stack }))
+        }
     }
     
     public func setList(_ list: [Sensor_p]?) {
@@ -204,5 +244,19 @@ internal class Settings: NSStackView, Settings_v {
         self.selectedSensor = id
         Store.shared.set(key: "\(self.title)_sensor", value: self.selectedSensor)
         self.selectedHandler(self.selectedSensor)
+    }
+    
+    @objc private func changeMiniLabelMode(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let mode = MiniLabelMode(rawValue: key) else { return }
+        self.miniLabelMode = mode
+        Store.shared.set(key: "\(self.title)_miniLabelMode", value: self.miniLabelMode.rawValue)
+        self.callback()
+    }
+    
+    @objc private func changeMiniLabelTextStyle(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let style = MiniLabelTextStyle(rawValue: key) else { return }
+        self.miniLabelTextStyle = style
+        Store.shared.set(key: "\(self.title)_miniLabelTextStyle", value: self.miniLabelTextStyle.rawValue)
+        self.callback()
     }
 }

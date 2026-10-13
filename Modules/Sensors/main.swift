@@ -19,11 +19,36 @@ public class Sensors: Module {
     private let portalView: Portal
     private let notificationsView: Notifications
     
+    private enum MiniLabelMode: String {
+        case valueOnly = "valueOnly"
+        case labelAndValue = "labelAndValue"
+    }
+    
     private var fanValueState: FanValue {
         FanValue(rawValue: Store.shared.string(key: "\(self.config.name)_fanValue", defaultValue: "percentage")) ?? .percentage
     }
     
     private var selectedSensor: String
+    
+    private var miniLabelMode: MiniLabelMode {
+        MiniLabelMode(rawValue: Store.shared.string(key: "\(self.config.name)_miniLabelMode", defaultValue: MiniLabelMode.labelAndValue.rawValue)) ?? .labelAndValue
+    }
+    
+    private enum MiniLabelTextStyle: String {
+        case sensorName = "sensorName"
+        case shortLetters = "shortLetters"
+        case firstLetter = "firstLetter"
+    }
+    
+    private var miniLabelTextStyle: MiniLabelTextStyle {
+        MiniLabelTextStyle(rawValue: Store.shared.string(key: "\(self.config.name)_miniLabelTextStyle", defaultValue: MiniLabelTextStyle.sensorName.rawValue)) ?? .sensorName
+    }
+    
+    private func firstLetter(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return String(trimmed.prefix(1))
+    }
     
     public init() {
         self.settingsView = Settings(.sensors)
@@ -122,11 +147,25 @@ public class Sensors: Module {
                     if value > 999 {
                         unit = ""
                     }
+                    
+                    let showLabel = self.miniLabelMode == .labelAndValue
+                    widget.setLabelState(showLabel)
+                    if showLabel {
+                        switch self.miniLabelTextStyle {
+                        case .sensorName:
+                            widget.setTitle("\(localizedString(active.name)):")
+                        case .shortLetters:
+                            widget.setTitle("A:")
+                        case .firstLetter:
+                            widget.setTitle("\(self.firstLetter(localizedString(active.name))):")
+                        }
+                    }
                     widget.setValue(value)
                     widget.setSuffix(unit)
                 }
             case let widget as StackWidget:
                 var list: [Stack_t] = []
+                var letterIndex: Int = 0
                 
                 value.sensors.forEach { (s: Sensor_p) in
                     if s.state {
@@ -136,7 +175,23 @@ public class Sensors: Module {
                                 value = "\(f.percentage)%"
                             }
                         }
-                        list.append(Stack_t(key: s.key, value: value))
+                        
+                        if self.miniLabelMode == .labelAndValue {
+                            let label: String
+                            switch self.miniLabelTextStyle {
+                            case .sensorName:
+                                label = localizedString(s.name)
+                            case .shortLetters:
+                                let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                                label = letterIndex < letters.count ? String(letters[letterIndex]) : "\(letterIndex+1)"
+                            case .firstLetter:
+                                label = self.firstLetter(localizedString(s.name))
+                            }
+                            letterIndex += 1
+                            list.append(Stack_t(key: s.key, value: "\(label): \(value)"))
+                        } else {
+                            list.append(Stack_t(key: s.key, value: value))
+                        }
                     }
                 }
                 
