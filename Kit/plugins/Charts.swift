@@ -244,6 +244,7 @@ public class LineChartView: ChartView {
     private var transparent: Bool = true
     private var flipY: Bool = false
     private var minMax: Bool = false
+    private var average: Bool = false
     private var color: NSColor
     private var suffix: String
     private var toolTipFunc: ((DoubleValue) -> String)?
@@ -311,6 +312,7 @@ public class LineChartView: ChartView {
         var transparent: Bool = true
         var flipY: Bool = false
         var minMax: Bool = false
+        var average: Bool = false
         var color: NSColor = .controlAccentColor
         var suffix: String = "%"
         var toolTipFunc: ((DoubleValue) -> String)?
@@ -326,6 +328,7 @@ public class LineChartView: ChartView {
             transparent = self.transparent
             flipY = self.flipY
             minMax = self.minMax
+            average = self.average
             color = self.color
             suffix = self.suffix
             toolTipFunc = self.toolTipFunc
@@ -434,15 +437,51 @@ public class LineChartView: ChartView {
                 NSAttributedString.Key.paragraphStyle: NSMutableParagraphStyle()
             ]
             
-            var str: String = ""
-            let flatList = originalPoints.map{ $0?.value ?? 0 }
-            if let value = flatList.max() {
-                str = toolTipFunc != nil ? toolTipFunc!(DoubleValue(value)) : "\(Int(value.rounded(toPlaces: 2) * 100))\(suffix)"
+            let values = originalPoints.compactMap { $0?.value }
+            if let minValue = values.min(), let maxValue = values.max() {
+                func format(_ value: Double) -> String {
+                    return toolTipFunc != nil ? toolTipFunc!(DoubleValue(value)) : "\(Int(value.rounded(toPlaces: 2) * 100))\(suffix)"
+                }
+                let font = stringAttributes[NSAttributedString.Key.font] as! NSFont
+                let maxStr = format(maxValue)
+                let minStr = format(minValue)
+                let topY = height + xLegendHeight - 9
+                let bottomY = xLegendHeight + 1
+                NSAttributedString.init(string: maxStr, attributes: stringAttributes).draw(with: CGRect(x: 1, y: flipY ? bottomY : topY, width: maxStr.widthOfString(usingFont: font), height: 8))
+                NSAttributedString.init(string: minStr, attributes: stringAttributes).draw(with: CGRect(x: 1, y: flipY ? topY : bottomY, width: minStr.widthOfString(usingFont: font), height: 8))
             }
-            let textWidth = str.widthOfString(usingFont: stringAttributes[NSAttributedString.Key.font] as! NSFont)
-            let y = flipY ? xLegendHeight + 1 : height + xLegendHeight - 9
-            let rect = CGRect(x: 1, y: y, width: textWidth, height: 8)
-            NSAttributedString.init(string: str, attributes: stringAttributes).draw(with: rect)
+        }
+        
+        if average {
+            let values = points.compactMap { $0?.value }
+            if !values.isEmpty {
+                let avgValue = values.reduce(0, +) / Double(values.count)
+                var scaledY = scaleValue(scale: scale, value: avgValue, maxValue: maxValue, zeroValue: zeroValue, maxHeight: height, limit: fixedScale)
+                if flipY {
+                    scaledY = height - scaledY
+                }
+                let avgY = scaledY + xLegendHeight
+                
+                let avgPath = NSBezierPath()
+                avgPath.move(to: CGPoint(x: yLegendWidth, y: avgY))
+                avgPath.line(to: CGPoint(x: self.frame.width, y: avgY))
+                avgPath.setLineDash([4, 4], count: 2, phase: 0)
+                avgPath.lineWidth = offset
+                (isDarkMode ? NSColor.systemYellow : NSColor.systemOrange).withAlphaComponent(0.35).setStroke()
+                avgPath.stroke()
+                
+                let font = NSFont.systemFont(ofSize: 9, weight: .light)
+                let stringAttributes: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: isDarkMode ? NSColor.white : NSColor.textColor,
+                    .paragraphStyle: NSMutableParagraphStyle()
+                ]
+                let formatted = toolTipFunc != nil ? toolTipFunc!(DoubleValue(avgValue)) : "\(Int(avgValue.rounded(toPlaces: 2) * 100))\(suffix)"
+                let label = "Avg \(formatted)"
+                let textWidth = label.widthOfString(usingFont: font)
+                let rectY = max(xLegendHeight + 1, min(avgY - 4, height + xLegendHeight - 9))
+                NSAttributedString.init(string: label, attributes: stringAttributes).draw(with: CGRect(x: self.frame.width - textWidth - 2, y: rectY, width: textWidth, height: 8))
+            }
         }
         
         if xLegend, list.count >= 2 {
@@ -729,6 +768,12 @@ public class LineChartView: ChartView {
     public func setMinMax(_ newValue: Bool) {
         guard self.read({ self.minMax }) != newValue else { return }
         self.write { self.minMax = newValue }
+        self.displayIfVisible()
+    }
+    
+    public func setAverage(_ newValue: Bool) {
+        guard self.read({ self.average }) != newValue else { return }
+        self.write { self.average = newValue }
         self.displayIfVisible()
     }
     
