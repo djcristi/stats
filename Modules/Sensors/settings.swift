@@ -12,7 +12,7 @@
 import Cocoa
 import Kit
 
-internal class Settings: NSStackView, Settings_v {
+internal class Settings: NSStackView, Settings_v, NSTextFieldDelegate {
     private var updateIntervalValue: Int = 3
     private var hidState: Bool
     private var fanSpeedState: Bool = false
@@ -170,7 +170,19 @@ internal class Settings: NSStackView, Settings_v {
                         state: s.state
                     )
                     btn.identifier = NSUserInterfaceItemIdentifier(rawValue: s.key)
-                    section.add(PreferencesRow(localizedString(s.name), component: btn))
+                    let letter = NSTextField()
+                    letter.identifier = NSUserInterfaceItemIdentifier(rawValue: s.key)
+                    letter.alignment = .center
+                    letter.placeholderString = String(localizedString(s.name).trimmingCharacters(in: .whitespacesAndNewlines).prefix(1))
+                    letter.stringValue = Store.shared.string(key: "sensor_label_\(s.key)", defaultValue: "")
+                    letter.target = self
+                    letter.action = #selector(self.changeSensorLabel)
+                    letter.delegate = self
+                    letter.widthAnchor.constraint(equalToConstant: 28).isActive = true
+                    let component = NSStackView(views: [letter, btn])
+                    component.orientation = .horizontal
+                    component.spacing = 8
+                    section.add(PreferencesRow(localizedString(s.name), component: component))
                     buttonList.append(KeyValue_t(key: s.key, value: "\(localizedString(typ.rawValue)) - \(s.name)"))
                 }
             }
@@ -205,6 +217,18 @@ internal class Settings: NSStackView, Settings_v {
     @objc private func toggleSensor(_ sender: NSControl) {
         guard let id = sender.identifier else { return }
         Store.shared.set(key: "sensor_\(id.rawValue)", value: controlState(sender))
+        self.callback()
+    }
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field.identifier != nil else { return }
+        self.changeSensorLabel(field)
+    }
+    
+    @objc private func changeSensorLabel(_ sender: NSTextField) {
+        guard let id = sender.identifier else { return }
+        let letter = String(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1))
+        sender.stringValue = letter
+        Store.shared.set(key: "sensor_label_\(id.rawValue)", value: letter)
         self.callback()
     }
     @objc private func changeUpdateInterval(_ sender: NSMenuItem) {
