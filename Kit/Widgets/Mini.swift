@@ -187,6 +187,15 @@ public class Mini: WidgetWrapper {
         })
     }
     
+    public func setLabelState(_ newValue: Bool) {
+        guard self.labelState != newValue else { return }
+        self.labelState = newValue
+        Store.shared.set(key: "\(self.title)_\(self.type.rawValue)_label", value: self.labelState)
+        DispatchQueue.main.async(execute: {
+            self.display()
+        })
+    }
+    
     public func setColorZones(_ newColorZones: colorZones) {
         let updated = self.queue.sync { () -> Bool in
             guard self._colorZones != newColorZones else { return false }
