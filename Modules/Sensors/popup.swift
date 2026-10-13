@@ -131,6 +131,20 @@ internal class Popup: PopupWrapper {
             self.addArrangedSubview(container)
         }
         
+        // Show sensors selected for the menu bar first.
+        let barSensorsToShow = sensors.filter { $0.state && $0.type != .fan && $0.popupState }
+        let barSensorKeys = Set(barSensorsToShow.map { $0.key })
+        if !barSensorsToShow.isEmpty {
+            self.addArrangedSubview(separatorView("In menu bar", width: self.frame.width))
+            barSensorsToShow.forEach { (s: Sensor_p) in
+                let sensor = SensorView(s, width: self.frame.width) { [weak self] in
+                    self?.recalculateHeight()
+                }
+                self.addArrangedSubview(sensor)
+                self.list[s.key] = sensor
+            }
+        }
+        
         var types: [SensorType] = []
         sensors.forEach { (s: Sensor_p) in
             if !types.contains(s.type) {
@@ -165,6 +179,7 @@ internal class Popup: PopupWrapper {
             
             if typ == .fan { return }
             filtered = filtered.filter{ $0.popupState }
+            filtered = filtered.filter { !barSensorKeys.contains($0.key) }
             if filtered.isEmpty { return }
             
             self.addArrangedSubview(separatorView(localizedString(typ.rawValue), width: self.frame.width))
