@@ -1,7 +1,8 @@
 name: mods-release
 
 # Rebases a throwaway copy of the `mods` branch onto the newest upstream release
-# tag, builds it (ad-hoc signed) and publishes it as a release named `mods-<tag>`.
+# tag, builds it (ad-hoc signed) and publishes it as a release tagged `mods-<tag>-r<N>` (e.g. mods-v3.0.21-r7), where N is the number of
+# mod commits on top of the upstream tag (the app compares it after the version).
 # The `mods` branch itself is never rewritten.
 
 on:
@@ -39,7 +40,7 @@ jobs:
           fetch-depth: 0
           ref: mods
 
-      - name: Resolve upstream tag
+      - name: Resolve upstream tag and revision
         id: tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,9 +50,21 @@ jobs:
             TAG=$(git ls-remote --tags --refs "$UPSTREAM" 'v[0-9]*.[0-9]*.[0-9]*' | awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
           fi
           echo "Upstream tag: $TAG"
+          git config user.name "djcristi"
+          git config user.email "djcristi16@gmail.com"
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream master
+          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
+          BASE=$(git merge-base HEAD upstream/master)
+          REV=$(git rev-list --count "$BASE"..HEAD)
+          REL="mods-$TAG-r$REV"
+          echo "Mods base: $BASE, revision: $REV, release: $REL"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.force }}" != "true" ] && gh release view "mods-$TAG" >/dev/null 2>&1; then
-            echo "Release mods-$TAG already exists, nothing to do."
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+          echo "rel=$REL" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.force }}" != "true" ] && gh release view "$REL" >/dev/null 2>&1; then
+            echo "Release $REL already exists, nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -62,13 +75,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          git config user.name "djcristi"
-          git config user.email "djcristi16@gmail.com"
-          git remote add upstream "$UPSTREAM"
-          git fetch --no-tags upstream master
-          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
-          BASE=$(git merge-base HEAD upstream/master)
-          echo "Mods base: $BASE"
+          BASE="${{ steps.tag.outputs.base }}"
           git log --oneline "$BASE"..HEAD
           if ! git rebase --onto "upstream-$TAG" "$BASE"; then
             git rebase --abort || true
@@ -85,6 +92,7 @@ jobs:
       - name: Build
         if: steps.tag.outputs.skip != 'true'
         run: |
+          /usr/libexec/PlistBuddy -c "Set :ModRevision ${{ steps.tag.outputs.rev }}" "Stats/Supporting Files/Info.plist"
           xcodebuild -scheme Stats -destination 'platform=macOS' -configuration Release \
             archive -archivePath build/Stats.xcarchive CODE_SIGNING_ALLOWED=NO
           mkdir -p dist
@@ -101,7 +109,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          gh release delete "mods-$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "mods-$TAG" Stats-mod.dmg Stats-mod.zip \
-            --title "Stats-mod $TAG" \
-            --notes "Upstream $TAG with the mods branch rebased on top. Ad-hoc signed. First install from a browser download: run \`xattr -cr Stats-mod.app\`. Later updates are installed by the app itself."
+          REL="${{ steps.tag.outputs.rel }}"
+          REV="${{ steps.tag.outputs.rev }}"
+          gh release delete "$REL" --yes --cleanup-tag 2>/dev/null || true
+          git tag -f "$REL" HEAD
+          git push origin "refs/tags/$REL" --force
+          gh release create "$REL" Stats-mod.dmg Stats-mod.zip --verify-tag \
+            --title "Stats-mod $TAG-r$REV" \
+            --notes "Upstream $TAG with the mods branch (revision $REV) rebased on top. Ad-hoc signed. First install from a browser download: run \`xattr -cr Stats-mod.app\`. Later updates are installed by the app itself."
