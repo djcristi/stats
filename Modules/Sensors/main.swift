@@ -50,6 +50,11 @@ public class Sensors: Module {
         return String(trimmed.prefix(1))
     }
     
+    private func miniLetter(_ s: Sensor_p) -> String {
+        let custom = Store.shared.string(key: "sensor_label_\(s.key)", defaultValue: "")
+        return custom.isEmpty ? self.firstLetter(localizedString(s.name)) : custom
+    }
+    
     public init() {
         self.settingsView = Settings(.sensors)
         self.popupView = Popup()
@@ -157,7 +162,7 @@ public class Sensors: Module {
                         case .shortLetters:
                             widget.setTitle("A:")
                         case .firstLetter:
-                            widget.setTitle("\(self.firstLetter(localizedString(active.name))):")
+                            widget.setTitle("\(self.miniLetter(active)):")
                         }
                     }
                     widget.setValue(value)
@@ -185,7 +190,7 @@ public class Sensors: Module {
                                 let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
                                 label = letterIndex < letters.count ? String(letters[letterIndex]) : "\(letterIndex+1)"
                             case .firstLetter:
-                                label = self.firstLetter(localizedString(s.name))
+                                label = self.miniLetter(s)
                             }
                             letterIndex += 1
                             list.append(Stack_t(key: s.key, value: "\(label): \(value)"))
