@@ -18,6 +18,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>849</string>
+	<key>ModRevision</key>
+	<string>0</string>
 	<key>Description</key>
 	<string>Simple macOS system monitor in your menu bar</string>
 	<key>LSApplicationCategoryType</key>
