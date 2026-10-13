@@ -140,6 +140,8 @@ internal class Popup: PopupWrapper {
                 let sensor = SensorView(s, width: self.frame.width) { [weak self] in
                     self?.recalculateHeight()
                 }
+                sensor.showsBarLetter = true
+                sensor.update(s)
                 self.addArrangedSubview(sensor)
                 self.list[s.key] = sensor
             }
@@ -270,7 +272,8 @@ internal class Popup: PopupWrapper {
 
 internal class SensorView: NSStackView {
     public var sizeCallback: (() -> Void)
-    
+    public var showsBarLetter: Bool = false
+
     private var valueView: ValueSensorView!
     private var chartView: ChartSensorView!
     
@@ -311,6 +314,18 @@ internal class SensorView: NSStackView {
             value = self.fanValueState == .percentage ? "\(fan.percentage)%" : fan.formattedValue
         }
         self.valueView.update(value)
+        if self.showsBarLetter {
+            self.valueView.setLabel(self.barLabel(sensor))
+        }
+    }
+    
+    private func barLabel(_ sensor: Sensor_p) -> String {
+        let mode = Store.shared.string(key: "Sensors_miniLabelMode", defaultValue: "labelAndValue")
+        let style = Store.shared.string(key: "Sensors_miniLabelTextStyle", defaultValue: "sensorName")
+        guard mode == "labelAndValue", style == "firstLetter" else { return sensor.name }
+        let custom = Store.shared.string(key: "sensor_label_\(sensor.key)", defaultValue: "")
+        let letter = custom.isEmpty ? String(localizedString(sensor.name).trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)) : custom
+        return letter.isEmpty ? sensor.name : "(\(letter)) \(sensor.name)"
     }
     
     public func addHistoryPoint(_ sensor: Sensor_p) {
@@ -383,6 +398,12 @@ internal class ValueSensorView: NSStackView {
     
     public func update(_ value: String) {
         self.valueView.stringValue = value
+    }
+    
+    public func setLabel(_ value: String) {
+        if self.labelView.stringValue != value {
+            self.labelView.stringValue = value
+        }
     }
     
     override func mouseDown(with theEvent: NSEvent) {
