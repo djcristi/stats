@@ -22,7 +22,7 @@ import Bluetooth
 import Clock
 import Remote
 
-let updater = Updater(github: "exelban/stats", url: "https://api.mac-stats.com/release/latest")
+let updater = Updater(github: "djcristi/stats", url: "")
 var modules: [Module] = [
     CPU(),
     GPU(),
