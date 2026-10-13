@@ -1,7 +1,8 @@
 name: mods-release
 
-# Rebases the `mods` branch onto the newest upstream release tag, builds it
-# (ad-hoc signed) and publishes it as a release named `mods-<tag>`.
+# Rebases a throwaway copy of the `mods` branch onto the newest upstream release
+# tag, builds it (ad-hoc signed) and publishes it as a release named `mods-<tag>`.
+# The `mods` branch itself is never rewritten.
 
 on:
   schedule:
@@ -100,7 +101,3 @@ jobs:
           gh release create "mods-$TAG" "Stats-$TAG-mods.zip" \
             --title "Stats $TAG + mods" \
             --notes "Upstream $TAG with the mods branch rebased on top. Ad-hoc signed: run \`xattr -cr Stats.app\` after unzipping."
-
-      - name: Move mods branch to the new base
-        if: steps.tag.outputs.skip != 'true'
-        run: git push --force-with-lease origin HEAD:mods
