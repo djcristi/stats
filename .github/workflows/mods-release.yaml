@@ -1,0 +1,106 @@
+name: mods-release
+
+# Rebases the `mods` branch onto the newest upstream release tag, builds it
+# (ad-hoc signed) and publishes it as a release named `mods-<tag>`.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to build (default: latest)"
+        required: false
+        type: string
+      force:
+        description: "Rebuild even if a release already exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: mods-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/exelban/stats.git
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: mods
+
+      - name: Resolve upstream tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(git ls-remote --tags --refs "$UPSTREAM" 'v[0-9]*.[0-9]*.[0-9]*' | awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
+          fi
+          echo "Upstream tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.force }}" != "true" ] && gh release view "mods-$TAG" >/dev/null 2>&1; then
+            echo "Release mods-$TAG already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase mods onto the tag
+        if: steps.tag.outputs.skip != 'true'
+        id: rebase
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          git config user.name "djcristi"
+          git config user.email "djcristi16@gmail.com"
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream master
+          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
+          BASE=$(git merge-base HEAD upstream/master)
+          echo "Mods base: $BASE"
+          git log --oneline "$BASE"..HEAD
+          if ! git rebase --onto "upstream-$TAG" "$BASE"; then
+            git rebase --abort || true
+            gh issue create \
+              --title "mods conflict on upstream $TAG" \
+              --body "Rebasing \`mods\` onto \`$TAG\` failed with conflicts. Rebase locally (\`git rebase --onto $TAG $BASE mods\`), resolve, push \`mods\`, then re-run the **mods-release** workflow."
+            exit 1
+          fi
+
+      - name: Select Xcode
+        if: steps.tag.outputs.skip != 'true'
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Build
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          xcodebuild -scheme Stats -destination 'platform=macOS' -configuration Release \
+            archive -archivePath build/Stats.xcarchive CODE_SIGNING_ALLOWED=NO
+          APP=build/Stats.xcarchive/Products/Applications/Stats.app
+          codesign --force --deep --sign - "$APP"
+          codesign -dv "$APP" 2>&1 | head -3
+          ditto -c -k --keepParent "$APP" "Stats-${{ steps.tag.outputs.tag }}-mods.zip"
+
+      - name: Publish release
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release delete "mods-$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "mods-$TAG" "Stats-$TAG-mods.zip" \
+            --title "Stats $TAG + mods" \
+            --notes "Upstream $TAG with the mods branch rebased on top. Ad-hoc signed: run \`xattr -cr Stats.app\` after unzipping."
+
+      - name: Move mods branch to the new base
+        if: steps.tag.outputs.skip != 'true'
+        run: git push --force-with-lease origin HEAD:mods
