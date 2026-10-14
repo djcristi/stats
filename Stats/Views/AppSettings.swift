@@ -294,7 +294,10 @@ class ApplicationSettings: NSStackView {
         statsName.stringValue = "Stats"
         statsName.isSelectable = true
         
-        let versionNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String
+        var versionNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String
+        if let revision = Int(Bundle.main.object(forInfoDictionaryKey: "ModRevision") as? String ?? ""), revision > 0 {
+            versionNumber += "-r\(revision)"
+        }
         let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as! String
         
         let statsVersion: NSTextField = TextView(frame: NSRect(x: 0, y: 0, width: view.frame.width, height: 16))
