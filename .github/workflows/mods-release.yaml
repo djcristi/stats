@@ -4,6 +4,7 @@ name: mods-release
 # tag, builds it (ad-hoc signed) and publishes it as a release tagged `mods-<tag>-r<N>` (e.g. mods-v3.0.21-r7), where N is the number of
 # mod commits on top of the upstream tag (the app compares it after the version).
 # The `mods` branch itself is never rewritten.
+# Scheduled runs build only when upstream has a new tag without a release; manual runs also build new mod revisions.
 
 on:
   schedule:
@@ -63,7 +64,13 @@ jobs:
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
           echo "rel=$REL" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.force }}" != "true" ] && gh release view "$REL" >/dev/null 2>&1; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # scheduled runs only react to a new upstream version, never to new mod commits
+            if gh release list --limit 200 --json tagName -q '.[].tagName' | grep -q "^mods-$TAG-r"; then
+              echo "Upstream $TAG already released, nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "${{ inputs.force }}" != "true" ] && gh release view "$REL" >/dev/null 2>&1; then
             echo "Release $REL already exists, nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
