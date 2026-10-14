@@ -99,6 +99,10 @@ jobs:
           git log --oneline "$BASE"..HEAD
           if ! git rebase --onto "upstream-$TAG" "$BASE"; then
             git rebase --abort || true
+            if gh issue list --state open --search "mods conflict on upstream $TAG in:title" --json title -q '.[].title' | grep -qx "mods conflict on upstream $TAG"; then
+              echo "Conflict issue for $TAG already open."
+              exit 1
+            fi
             gh issue create \
               --title "mods conflict on upstream $TAG" \
               --body "Rebasing \`mods\` onto \`$TAG\` failed with conflicts. Rebase locally (\`git rebase --onto $TAG $BASE mods\`), resolve, push \`mods\`, then re-run the **mods-release** workflow."
