@@ -139,5 +139,5 @@ jobs:
           git tag -f "$REL" HEAD
           git push origin "refs/tags/$REL" --force
           gh release create "$REL" Stats-mod.dmg Stats-mod.zip --verify-tag \
-            --title "Stats-mod $REL" \
+            --title "$REL" \
             --notes "Upstream $TAG with the mods branch (revision $REV) rebased on top. Ad-hoc signed. First install from a browser download: run \`xattr -cr Stats-mod.app\`. Later updates are installed by the app itself."
