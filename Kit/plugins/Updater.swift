@@ -43,7 +43,7 @@ public class Updater {
     private let currentVersion: String = {
         let version = "v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String)"
         let revision = Int(Bundle.main.object(forInfoDictionaryKey: "ModRevision") as? String ?? "") ?? 0
-        return revision > 0 ? "\(version)-r\(revision)" : version
+        return revision > 0 ? "\(version)-mod-r\(revision)" : version
     }()
     
     private var observation: NSKeyValueObservation?
@@ -106,10 +106,10 @@ public class Updater {
         }
     }
     
-    // Mod builds are tagged "v3.0.21-r7": upstream version first, mod revision as the tiebreaker.
+    // Mod builds are shown as "v3.0.21-mod-r7": upstream version first, mod revision as the tiebreaker.
     internal static func splitRevision(_ value: String) -> (base: String, revision: Int) {
-        guard let range = value.range(of: #"-r\d+$"#, options: .regularExpression) else { return (value, 0) }
-        return (String(value[..<range.lowerBound]), Int(value[range].dropFirst(2)) ?? 0)
+        guard let range = value.range(of: #"-mod-r\d+$"#, options: .regularExpression) else { return (value, 0) }
+        return (String(value[..<range.lowerBound]), Int(value[range].dropFirst("-mod-r".count)) ?? 0)
     }
     
     internal static func isNewer(current: String, latest: String) -> Bool {
@@ -139,7 +139,8 @@ public class Updater {
                 }
                 
                 // release tags look like "mods-v3.0.21-r7"
-                let lastVersion = tagName.hasPrefix("mods-") ? String(tagName.dropFirst("mods-".count)) : tagName
+                let stripped = tagName.hasPrefix("mods-") ? String(tagName.dropFirst("mods-".count)) : tagName
+                let lastVersion = stripped.replacingOccurrences(of: #"-r(\d+)$"#, with: "-mod-r$1", options: .regularExpression)
                 self.expectedDigest = (asset["digest"] as? String)?.replacingOccurrences(of: "sha256:", with: "").lowercased()
                 completion((lastVersion, downloadURL), nil)
             } catch let parsingError {
