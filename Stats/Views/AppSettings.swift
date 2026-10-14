@@ -296,7 +296,7 @@ class ApplicationSettings: NSStackView {
         
         var versionNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String
         if let revision = Int(Bundle.main.object(forInfoDictionaryKey: "ModRevision") as? String ?? ""), revision > 0 {
-            versionNumber += "-r\(revision)"
+            versionNumber += "-mod-r\(revision)"
         }
         let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as! String
         
