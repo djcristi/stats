@@ -1,0 +1,14 @@
+name: mods-trigger
+
+on:
+  push:
+    branches:
+      - mods
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    uses: djcristi/stats/.github/workflows/mods-release.yaml@master
