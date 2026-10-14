@@ -4,7 +4,7 @@ name: mods-release
 # tag, builds it (ad-hoc signed) and publishes it as a release tagged `mods-<tag>-r<N>` (e.g. mods-v3.0.21-r7), where N is the number of
 # mod commits on top of the upstream tag (the app compares it after the version).
 # The `mods` branch itself is never rewritten.
-# Scheduled runs build only when upstream has a new tag without a release; manual runs also build new mod revisions.
+# Triggers: daily poll (builds only for an upstream tag with no release yet), push to mods (via mods-trigger.yaml) and manual runs (both build a new -rN revision).
 
 on:
   schedule:
@@ -17,6 +17,15 @@ on:
         type: string
       force:
         description: "Rebuild even if a release already exists"
+        type: boolean
+        default: false
+  # called by mods-trigger.yaml on the mods branch, so a push to mods builds a new revision
+  workflow_call:
+    inputs:
+      tag:
+        required: false
+        type: string
+      force:
         type: boolean
         default: false
 
