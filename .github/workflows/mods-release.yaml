@@ -1,8 +1,8 @@
 name: mods-release
 
 # Rebases a throwaway copy of the `mods` branch onto the newest upstream release
-# tag, builds it (ad-hoc signed) and publishes it as a release tagged `mods-<tag>-r<N>` (e.g. mods-v3.0.21-r7), where N is the number of
-# mod commits on top of the upstream tag (the app compares it after the version).
+# tag, builds it (ad-hoc signed) and publishes it as a release tagged `mods-<tag>-r<N>` (e.g. mods-v3.0.21-r7), where N counts the mod builds released
+# for that upstream tag (1 for a new tag, +1 per further build; the app compares it after the version).
 # The `mods` branch itself is never rewritten.
 # Triggers: daily poll (builds only for an upstream tag with no release yet), push to mods (via mods-trigger.yaml) and manual runs (both build a new -rN revision).
 
@@ -66,23 +66,27 @@ jobs:
           git fetch --no-tags upstream master
           git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
           BASE=$(git merge-base HEAD upstream/master)
-          REV=$(git rev-list --count "$BASE"..HEAD)
+          # revision = number of mod builds already released for this upstream tag, plus one
+          MAXR=$(gh release list --limit 200 --json tagName -q '.[].tagName' | sed -n "s/^mods-$TAG-r\([0-9][0-9]*\)$/\1/p" | sort -n | tail -1)
+          MAXR=${MAXR:-0}
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # scheduled runs only react to a new upstream version, never to new mod commits
+            REV=1
+            if [ "$MAXR" -gt 0 ]; then
+              echo "Upstream $TAG already released (r$MAXR), nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "${{ inputs.force }}" = "true" ] && [ "$MAXR" -gt 0 ]; then
+            REV=$MAXR
+          else
+            REV=$((MAXR + 1))
+          fi
           REL="mods-$TAG-r$REV"
           echo "Mods base: $BASE, revision: $REV, release: $REL"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
           echo "rel=$REL" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            # scheduled runs only react to a new upstream version, never to new mod commits
-            if gh release list --limit 200 --json tagName -q '.[].tagName' | grep -q "^mods-$TAG-r"; then
-              echo "Upstream $TAG already released, nothing to do."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-            fi
-          elif [ "${{ inputs.force }}" != "true" ] && gh release view "$REL" >/dev/null 2>&1; then
-            echo "Release $REL already exists, nothing to do."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Rebase mods onto the tag
         if: steps.tag.outputs.skip != 'true'
