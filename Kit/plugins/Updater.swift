@@ -40,11 +40,13 @@ public class Updater {
     private let server: URL
     
     private let appName: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as! String
-    private let currentVersion: String = {
-        let version = "v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String)"
+    // "3.0.21-mod-r7": upstream version plus mod revision, the one format used by the app, tags and releases
+    public static let versionName: String = {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String
         let revision = Int(Bundle.main.object(forInfoDictionaryKey: "ModRevision") as? String ?? "") ?? 0
         return revision > 0 ? "\(version)-mod-r\(revision)" : version
     }()
+    private let currentVersion: String = "v\(Updater.versionName)"
     
     private var observation: NSKeyValueObservation?
     private var expectedDigest: String? = nil
@@ -138,9 +140,8 @@ public class Updater {
                     return
                 }
                 
-                // release tags look like "mods-v3.0.21-r7"
-                let stripped = tagName.hasPrefix("mods-") ? String(tagName.dropFirst("mods-".count)) : tagName
-                let lastVersion = stripped.replacingOccurrences(of: #"-r(\d+)$"#, with: "-mod-r$1", options: .regularExpression)
+                // release tags look like "v3.0.21-mod-r7", same as the version shown in the app
+                let lastVersion = tagName
                 self.expectedDigest = (asset["digest"] as? String)?.replacingOccurrences(of: "sha256:", with: "").lowercased()
                 completion((lastVersion, downloadURL), nil)
             } catch let parsingError {
