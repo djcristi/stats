@@ -170,3 +170,24 @@ jobs:
             git push --force-with-lease="mods:$ORIG" origin HEAD:refs/heads/mods \
               || echo "::warning::mods not moved onto $TAG (it changed during the run or the push was rejected); rebase locally"
           fi
+
+      - name: Move master onto the new base
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          git fetch --no-tags origin master
+          ORIGM=$(git rev-parse origin/master)
+          if git merge-base --is-ancestor "upstream-$TAG" "$ORIGM"; then
+            echo "master already contains $TAG"
+            exit 0
+          fi
+          git worktree add -q --detach /tmp/wtm "$ORIGM"
+          cd /tmp/wtm
+          MB=$(git merge-base HEAD upstream/master)
+          if ! git rebase --onto "upstream-$TAG" "$MB"; then
+            git rebase --abort || true
+            echo "::warning::master not moved onto $TAG (rebase conflict)"
+            exit 0
+          fi
+          git push --force-with-lease="master:$ORIGM" origin HEAD:refs/heads/master \
+            || echo "::warning::master not moved onto $TAG (push rejected, upstream changed workflow files? needs a token with workflow scope)"
