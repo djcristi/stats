@@ -3,7 +3,7 @@ name: mods-release
 # Rebases a throwaway copy of the `mods` branch onto the newest upstream release
 # tag, builds it (ad-hoc signed) and publishes it as a release tagged `<tag>-mod-r<N>` (e.g. v3.0.21-mod-r7), where N counts the mod builds released
 # for that upstream tag (1 for a new tag, +1 per further build; the app compares it after the version).
-# The `mods` branch itself is never rewritten.
+# After a successful release the `mods` branch is moved onto the same rebased commit (force-with-lease) and the upstream tag is mirrored, so mods always starts at the latest upstream release.
 # Triggers: daily poll (builds only for an upstream tag with no release yet), push to mods (via mods-trigger.yaml) and manual runs (both build a new -rN revision).
 
 on:
@@ -83,6 +83,7 @@ jobs:
           fi
           REL="$TAG-mod-r$REV"
           echo "Mods base: $BASE, revision: $REV, release: $REL"
+          echo "orig=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
@@ -155,3 +156,17 @@ jobs:
           gh release create "$REL" Stats-mod.dmg Stats-mod.zip --verify-tag \
             --title "$REL" \
             --notes "Upstream $TAG with the mods branch (revision $REV) rebased on top. Ad-hoc signed. First install from a browser download: run \`xattr -cr Stats-mod.app\`. Later updates are installed by the app itself."
+
+      - name: Move mods onto the new base
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          ORIG="${{ steps.tag.outputs.orig }}"
+          git push origin "refs/tags/upstream-$TAG:refs/tags/$TAG" || echo "::warning::could not mirror upstream tag $TAG"
+          if [ "$(git rev-parse HEAD)" = "$ORIG" ]; then
+            echo "mods already based on $TAG"
+          else
+            # lease: refuse if mods moved since this run started (a push made meanwhile is not overwritten)
+            git push --force-with-lease="mods:$ORIG" origin HEAD:refs/heads/mods \
+              || echo "::warning::mods not moved onto $TAG (it changed during the run or the push was rejected); rebase locally"
+          fi
