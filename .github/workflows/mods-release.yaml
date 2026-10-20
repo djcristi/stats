@@ -97,15 +97,28 @@ jobs:
           TAG="${{ steps.tag.outputs.tag }}"
           BASE="${{ steps.tag.outputs.base }}"
           git log --oneline "$BASE"..HEAD
-          if ! git rebase --onto "upstream-$TAG" "$BASE"; then
+          PLIST="Stats/Supporting Files/Info.plist"
+          ok=1
+          git rebase --onto "upstream-$TAG" "$BASE" || {
+            # upstream bumps CFBundleVersion in Info.plist on every release; take upstream's file, ModRevision is added at build time
+            while git rebase --show-current-patch >/dev/null 2>&1; do
+              U=$(git diff --name-only --diff-filter=U)
+              if [ "$U" = "$PLIST" ]; then
+                git checkout --ours -- "$PLIST"
+                git add "$PLIST"
+                GIT_EDITOR=true git rebase --continue || true
+              else
+                echo "Unresolvable conflict in: $U"
+                ok=0
+                break
+              fi
+            done
+          }
+          if [ "$ok" != 1 ]; then
             git rebase --abort || true
-            if gh issue list --state open --search "mods conflict on upstream $TAG in:title" --json title -q '.[].title' | grep -qx "mods conflict on upstream $TAG"; then
-              echo "Conflict issue for $TAG already open."
-              exit 1
-            fi
-            gh issue create \
-              --title "mods conflict on upstream $TAG" \
-              --body "Rebasing \`mods\` onto \`$TAG\` failed with conflicts. Rebase locally (\`git rebase --onto $TAG $BASE mods\`), resolve, push \`mods\`, then re-run the **mods-release** workflow."
+            MSG="Rebasing mods onto $TAG failed with conflicts. Run: git rebase --onto $TAG $BASE mods, resolve, push mods (the push rebuilds)."
+            echo "::error::$MSG"
+            gh issue create --title "mods conflict on upstream $TAG" --body "$MSG" || true
             exit 1
           fi
 
@@ -116,7 +129,8 @@ jobs:
       - name: Build
         if: steps.tag.outputs.skip != 'true'
         run: |
-          /usr/libexec/PlistBuddy -c "Set :ModRevision ${{ steps.tag.outputs.rev }}" "Stats/Supporting Files/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :ModRevision ${{ steps.tag.outputs.rev }}" "Stats/Supporting Files/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :ModRevision string ${{ steps.tag.outputs.rev }}" "Stats/Supporting Files/Info.plist"
           xcodebuild -scheme Stats -destination 'platform=macOS' -configuration Release \
             archive -archivePath build/Stats.xcarchive CODE_SIGNING_ALLOWED=NO
           mkdir -p dist
