@@ -4,7 +4,6 @@ name: mods-release
 # tag, builds it (ad-hoc signed) and publishes it as a release tagged `<tag>-mod-r<N>` (e.g. v3.0.21-mod-r7), where N counts the mod builds released
 # for that upstream tag (1 for a new tag, +1 per further build; the app compares it after the version).
 # After a successful release the `mods` branch is moved onto the same rebased commit (force-with-lease) and the upstream tag is mirrored, so mods always starts at the latest upstream release.
-# Pushes to mods/master use secret MODS_PUSH_TOKEN (PAT with workflow scope) when set; the default token cannot push upstream changes to .github/workflows.
 # Triggers: daily poll (builds only for an upstream tag with no release yet), push to mods (via mods-trigger.yaml) and manual runs (both build a new -rN revision).
 
 on:
@@ -165,10 +164,7 @@ jobs:
 
       - name: Move mods onto the new base
         if: steps.tag.outputs.skip != 'true'
-        env:
-          PUSH_TOKEN: ${{ secrets.MODS_PUSH_TOKEN }}
         run: |
-          if [ -n "$PUSH_TOKEN" ]; then git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git"; fi
           TAG="${{ steps.tag.outputs.tag }}"
           ORIG="${{ steps.tag.outputs.orig }}"
           git push origin "refs/tags/upstream-$TAG:refs/tags/$TAG" || echo "::warning::could not mirror upstream tag $TAG"
@@ -181,10 +177,7 @@ jobs:
           fi
 
       - name: Move master onto the new base
-        env:
-          PUSH_TOKEN: ${{ secrets.MODS_PUSH_TOKEN }}
         run: |
-          if [ -n "$PUSH_TOKEN" ]; then git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git"; fi
           git fetch --no-tags origin master
           ORIGM=$(git rev-parse origin/master)
           if git merge-base --is-ancestor upstream/master "$ORIGM"; then
@@ -200,4 +193,4 @@ jobs:
             exit 0
           fi
           git push --force-with-lease="master:$ORIGM" origin HEAD:refs/heads/master \
-            || echo "::warning::master not moved onto upstream master (push rejected, upstream changed workflow files? needs a token with workflow scope)"
+            || echo "::warning::master not moved onto upstream master (push rejected, upstream changed workflow files; rebase master locally)"
