@@ -15,6 +15,7 @@ public class NetworkChart: WidgetWrapper {
     private var boxState: Bool = false
     private var frameState: Bool = false
     private var labelState: Bool = false
+    private var gradientFillState: Bool = true
     private var historyCount: Int = 60
     private var downloadColor: SColor = .secondBlue
     private var uploadColor: SColor = .secondRed
@@ -77,6 +78,7 @@ public class NetworkChart: WidgetWrapper {
             self.boxState = Store.shared.bool(key: "\(self.title)_\(self.type.rawValue)_box", defaultValue: self.boxState)
             self.frameState = Store.shared.bool(key: "\(self.title)_\(self.type.rawValue)_frame", defaultValue: self.frameState)
             self.labelState = Store.shared.bool(key: "\(self.title)_\(self.type.rawValue)_label", defaultValue: self.labelState)
+            self.gradientFillState = Store.shared.bool(key: "\(self.title)_\(self.type.rawValue)_gradientFill", defaultValue: self.gradientFillState)
             self.historyCount = Store.shared.int(key: "\(self.title)_\(self.type.rawValue)_historyCount", defaultValue: self.historyCount)
             self.downloadColor = SColor.fromString(Store.shared.string(key: "\(self.title)_\(self.type.rawValue)_downloadColor", defaultValue: self.downloadColor.key))
             self.uploadColor = SColor.fromString(Store.shared.string(key: "\(self.title)_\(self.type.rawValue)_uploadColor", defaultValue: self.uploadColor.key))
@@ -117,6 +119,7 @@ public class NetworkChart: WidgetWrapper {
         
         var points: [(Double, Double)] = []
         var labelState: Bool = false
+        var gradientFillState: Bool = true
         var boxState: Bool = false
         var frameState: Bool = false
         var scaleState: Scale = .linear
@@ -128,6 +131,7 @@ public class NetworkChart: WidgetWrapper {
         self.queue.sync {
             points = self.points
             labelState = self.labelState
+            gradientFillState = self.gradientFillState
             boxState = self.boxState
             frameState = self.frameState
             scaleState = self.scaleState
@@ -167,7 +171,7 @@ public class NetworkChart: WidgetWrapper {
         ), xRadius: 2, yRadius: 2)
         
         if boxState {
-            (isDarkMode ? NSColor.white : NSColor.black).set()
+            (self.isDarkMode ? NSColor.white : NSColor.black).set()
             box.stroke()
             box.fill()
         }
@@ -235,9 +239,15 @@ public class NetworkChart: WidgetWrapper {
         topUnderLinePath.line(to: CGPoint(x: columnXPoint(0), y: zero))
         topUnderLinePath.close()
         topUnderLinePath.addClip()
-        bottomColor?.withAlphaComponent(0.5).setFill()
-        let topFillRect = NSRect(x: chartFrame.origin.x - lineWidth, y: chartFrame.origin.y, width: chartFrame.width + (lineWidth*3), height: chartFrame.height)
-        NSBezierPath(rect: topFillRect).fill()
+        if gradientFillState, let color = bottomColor, let gradient = NSGradient(colors: [
+            color.withAlphaComponent(0.5),
+            color.withAlphaComponent(1.0)
+        ]) {
+            gradient.draw(in: topUnderLinePath, angle: 90)
+        } else {
+            bottomColor?.setFill()
+            topUnderLinePath.fill()
+        }
         
         context.restoreGState()
         context.saveGState()
@@ -247,14 +257,20 @@ public class NetworkChart: WidgetWrapper {
         bottomUnderLinePath.line(to: CGPoint(x: columnXPoint(0), y: zero))
         bottomUnderLinePath.close()
         bottomUnderLinePath.addClip()
-        topColor?.withAlphaComponent(0.5).setFill()
-        let bottomFillRect = NSRect(x: chartFrame.origin.x - lineWidth, y: chartFrame.origin.y, width: chartFrame.width + (lineWidth*3), height: chartFrame.height)
-        NSBezierPath(rect: bottomFillRect).fill()
+        if gradientFillState, let color = topColor, let gradient = NSGradient(colors: [
+            color.withAlphaComponent(0.5),
+            color.withAlphaComponent(1.0)
+        ]) {
+            gradient.draw(in: bottomUnderLinePath, angle: 270)
+        } else {
+            topColor?.setFill()
+            bottomUnderLinePath.fill()
+        }
         
         context.restoreGState()
         
         if boxState || frameState {
-            (isDarkMode ? NSColor.white : NSColor.black).set()
+            (self.isDarkMode ? NSColor.white : NSColor.black).set()
             box.lineWidth = lineWidth
             box.stroke()
         }
@@ -279,44 +295,48 @@ public class NetworkChart: WidgetWrapper {
     public override func settings() -> NSView {
         let view = SettingsContainerView()
         
-        let box = switchView(
+        let box = self.switchView(
             action: #selector(self.toggleBox),
             state: self.boxState
         )
         self.boxSettingsView = box
-        let frame = switchView(
+        let frame = self.switchView(
             action: #selector(self.toggleFrame),
             state: self.frameState
         )
         self.frameSettingsView = frame
         
         view.addArrangedSubview(PreferencesSection([
-            PreferencesRow(localizedString("Label"), component: switchView(
+            PreferencesRow(localizedString("Label"), component: self.switchView(
                 action: #selector(self.toggleLabel),
                 state: self.labelState
             )),
             PreferencesRow(localizedString("Box"), component: box),
             PreferencesRow(localizedString("Frame"), component: frame),
-            PreferencesRow(localizedString("Reverse order"), component: switchView(
+            PreferencesRow(localizedString("Reverse order"), component: self.switchView(
                 action: #selector(self.toggleReverseOrder),
                 state: self.reverseOrderState
             )),
-            PreferencesRow(localizedString("Color of download"), component: colorSelectView(
+            PreferencesRow(localizedString("Color of download"), component: self.colorSelectView(
                 action: #selector(self.toggleDownloadColor),
                 items: self.colors,
                 selected: self.downloadColor.key
             )),
-            PreferencesRow(localizedString("Color of upload"), component: colorSelectView(
+            PreferencesRow(localizedString("Color of upload"), component: self.colorSelectView(
                 action: #selector(self.toggleUploadColor),
                 items: self.colors,
                 selected: self.uploadColor.key
             )),
-            PreferencesRow(localizedString("Number of reads in the chart"), component: selectView(
+            PreferencesRow(localizedString("Gradient fill"), component: self.switchView(
+                action: #selector(self.toggleGradientFill),
+                state: self.gradientFillState
+            )),
+            PreferencesRow(localizedString("Number of reads in the chart"), component: self.selectView(
                 action: #selector(self.toggleHistoryCount),
                 items: self.historyNumbers,
                 selected: "\(self.historyCount)"
             )),
-            PreferencesRow(localizedString("Scaling"), component: selectView(
+            PreferencesRow(localizedString("Scaling"), component: self.selectView(
                 action: #selector(self.toggleScale),
                 items: Scale.allCases.filter({ $0 != .fixed }),
                 selected: self.scaleState.key
@@ -375,7 +395,7 @@ public class NetworkChart: WidgetWrapper {
         guard let key = sender.representedObject as? String, let num = Int(key) else { return }
         self.queue.sync {
             self.historyCount = num
-
+            
             if num < self.points.count {
                 self.points = Array(self.points.suffix(num))
             } else if num > self.points.count {
@@ -402,6 +422,15 @@ public class NetworkChart: WidgetWrapper {
             self.uploadColor = SColor.fromString(key, defaultValue: self.uploadColor)
         }
         Store.shared.set(key: "\(self.title)_\(self.type.rawValue)_uploadColor", value: self.uploadColor.key)
+        self.display()
+    }
+    
+    @objc private func toggleGradientFill(_ sender: NSControl) {
+        let state = controlState(sender)
+        self.queue.sync {
+            self.gradientFillState = state
+        }
+        Store.shared.set(key: "\(self.title)_\(self.type.rawValue)_gradientFill", value: self.gradientFillState)
         self.display()
     }
     

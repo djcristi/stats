@@ -86,6 +86,10 @@ public class SystemStats {
     
     private var lastSleepTime: Date?
     private var lastRegisterTime: Date?
+    private var sensorNames: [String: String]?
+    private var sensorNamesPending = false
+    private var registeringSensorNames = false
+    private var sensorNamesRetryAfter = Date.distantPast
     fileprivate let cooldownLock = NSLock()
     
     struct Details: Codable {
@@ -120,6 +124,7 @@ public class SystemStats {
         let gpu: [gpu_s]?
         let ram: [dimm_s]?
         let disk: [disk_s]?
+        let sensors: [String: String]?
     }
     
     public init() {
@@ -185,7 +190,14 @@ public class SystemStats {
             return
         }
         self.auth.logout()
+        self.cooldownLock.lock()
+        self.sensorNamesPending = self.sensorNames != nil
+        self.registeringSensorNames = false
+        self.sensorNamesRetryAfter = .distantPast
+        self.lastRegisterTime = nil
+        self.cooldownLock.unlock()
         self.mqtt.disconnect()
+        self.plan = nil
         self.isAuthorized = false
         debug("Logout successfully from Stats Remote", log: self.log)
         NotificationCenter.default.post(name: .remoteState, object: nil, userInfo: ["auth": self.isAuthorized])
@@ -315,7 +327,29 @@ public class SystemStats {
         self.mqtt.disconnect()
     }
     
-    private func registerDevice(omitCooldown: Bool = false) {
+    public func setSensorNames(_ names: [String: String]) {
+        self.cooldownLock.lock()
+        defer { self.cooldownLock.unlock() }
+        guard self.sensorNames != names else { return }
+        self.sensorNames = names
+        self.sensorNamesPending = true
+    }
+    
+    fileprivate func registerPendingSensorNames() {
+        self.cooldownLock.lock()
+        defer { self.cooldownLock.unlock() }
+        guard self.sensorNamesPending, !self.registeringSensorNames,
+              Date() >= self.sensorNamesRetryAfter, let names = self.sensorNames else { return }
+        self.sensorNamesPending = false
+        self.registeringSensorNames = true
+        let generation = self.auth.generation
+        DispatchQueue.main.async {
+            guard self.auth.generation == generation else { return }
+            self.registerDevice(omitCooldown: true, sensorNames: names)
+        }
+    }
+    
+    private func registerDevice(omitCooldown: Bool = false, sensorNames: [String: String]? = nil) {
         let oneHour: TimeInterval = 3600
         let now = Date()
         self.cooldownLock.lock()
@@ -324,10 +358,51 @@ public class SystemStats {
             debug("Device registration skipped: cooldown period not met", log: self.log)
             return
         }
+        let generation = self.auth.generation
+        if sensorNames != nil && !self.shouldSendMetric(key: "Sensors@SensorsReader") {
+            self.registeringSensorNames = false
+            self.sensorNamesPending = true
+            self.cooldownLock.unlock()
+            return
+        }
         self.lastRegisterTime = now
         self.cooldownLock.unlock()
         
-        guard let url = URL(string: "\(SystemStats.host)/v1/machine") else { return }
+        guard let request = self.registrationRequest(sensorNames: sensorNames) else {
+            self.finishSensorRegistration(sensorNames, response: nil, generation: generation)
+            return
+        }
+        self.authorizedData(for: request) { [weak self] data, response, _ in
+            guard let self else { return }
+            let httpResponse = response as? HTTPURLResponse
+            self.finishSensorRegistration(sensorNames, response: httpResponse, generation: generation)
+            guard self.auth.generation == generation, let httpResponse else { return }
+            if httpResponse.statusCode == 200 {
+                debug("Registered device: \(SystemStats.shared.id.uuidString)", log: self.log)
+                self.fetchAccount()
+            } else {
+                let bodyString = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                debug("Register remote failed (\(httpResponse.statusCode)): \(bodyString)", log: self.log)
+            }
+        }
+    }
+    
+    private func finishSensorRegistration(_ names: [String: String]?, response: HTTPURLResponse?, generation: UInt) {
+        guard names != nil else { return }
+        self.cooldownLock.lock()
+        defer { self.cooldownLock.unlock() }
+        guard self.auth.generation == generation else { return }
+        self.registeringSensorNames = false
+        if response?.statusCode == 200 {
+            self.sensorNamesRetryAfter = .distantPast
+        } else {
+            self.sensorNamesPending = true
+            self.sensorNamesRetryAfter = Date().addingTimeInterval(60)
+        }
+    }
+    
+    private func registrationRequest(sensorNames: [String: String]?) -> URLRequest? {
+        guard let url = URL(string: "\(SystemStats.host)/v1/machine") else { return nil }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -363,24 +438,15 @@ public class SystemStats {
                     cpu: SystemKit.shared.device.info.cpu,
                     gpu: SystemKit.shared.device.info.gpu,
                     ram: SystemKit.shared.device.info.ram?.dimms,
-                    disk: SystemKit.shared.device.info.disk
+                    disk: SystemKit.shared.device.info.disk,
+                    sensors: sensorNames
                 )
             )
         )
         
-        guard let body = try? JSONEncoder().encode(payload) else { return }
+        guard let body = try? JSONEncoder().encode(payload) else { return nil }
         request.httpBody = body
-        
-        self.authorizedData(for: request) { [weak self] data, response, _ in
-            guard let self, let httpResponse = response as? HTTPURLResponse else { return }
-            if httpResponse.statusCode == 200 {
-                debug("Registered device: \(SystemStats.shared.id.uuidString)", log: self.log)
-                self.fetchAccount()
-            } else {
-                let bodyString = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                debug("Register remote failed (\(httpResponse.statusCode)): \(bodyString)", log: self.log)
-            }
-        }
+        return request
     }
     
     private func fetchAccount() {
@@ -628,7 +694,7 @@ public class RemoteAuth {
     
     private static let formAllowed: CharacterSet = CharacterSet(charactersIn:
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-    
+        
     private static func formBody(_ pairs: [(String, String)]) -> Data {
         let body = pairs.map { key, value in
             let k = key.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? key
@@ -897,7 +963,7 @@ public class RemoteAuth {
         var base64 = payload
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
-        
+            
         while base64.count % 4 != 0 {
             base64 += "="
         }
@@ -920,6 +986,7 @@ final class RemoteMetricBatch {
     private let publish: (Data) -> Void
     private var pending: [String: String] = [:]
     private var flush: DispatchWorkItem?
+    private var lastSensorWindow: Int?
     
     init(queue: DispatchQueue, isEnabled: @escaping (String) -> Bool = { _ in true }, publish: @escaping (Data) -> Void) {
         self.queue = queue
@@ -933,9 +1000,15 @@ final class RemoteMetricBatch {
     
     func append(key: String, value: RemoteType) {
         guard self.isEnabled(key) else { return }
-        guard let value = value.remote() else { return }
+        if key == "Sensors@SensorsReader" {
+            let window = Int(ProcessInfo.processInfo.systemUptime / 3)
+            guard self.lastSensorWindow != window else { return }
+            self.lastSensorWindow = window
+            SystemStats.shared.registerPendingSensorNames()
+        }
+        guard let metric = value.remote() else { return }
         
-        self.pending[key] = value
+        self.pending[key] = metric
         guard self.flush == nil else { return }
         
         let work = DispatchWorkItem { [weak self] in
@@ -953,6 +1026,9 @@ final class RemoteMetricBatch {
     }
     
     func remove(module: String) {
+        if module == "Sensors" {
+            self.lastSensorWindow = nil
+        }
         self.pending = self.pending.filter { !$0.key.hasPrefix("\(module)@") }
         if self.pending.isEmpty {
             self.flush?.cancel()
@@ -961,6 +1037,7 @@ final class RemoteMetricBatch {
     }
     
     func cancel() {
+        self.lastSensorWindow = nil
         self.flush?.cancel()
         self.flush = nil
         self.pending.removeAll()
@@ -1139,7 +1216,7 @@ class MQTTManager: NSObject {
     
     private func sendConnect() {
         guard let token = self.connectionToken else { return }
-        let connectPacket = createConnectPacket(username: SystemStats.shared.id.uuidString, password: token)
+        let connectPacket = self.createConnectPacket(username: SystemStats.shared.id.uuidString, password: token)
         self.webSocket?.send(.data(connectPacket)) { error in
             if let error = error {
                 print("Error sending MQTT CONNECT: \(error)")
@@ -1204,7 +1281,7 @@ class MQTTManager: NSObject {
     private func subscribe(to topic: String) {
         guard self.isConnected else { return }
         
-        let subscribePacket = createSubscribePacket(topic: topic)
+        let subscribePacket = self.createSubscribePacket(topic: topic)
         self.webSocket?.send(.data(subscribePacket)) { error in
             if let error = error {
                 print("Error subscribing to MQTT topic: \(error)")
@@ -1218,7 +1295,7 @@ class MQTTManager: NSObject {
         let fixedHeaderByte = MQTTPacketType.connect.rawValue << 4
         
         var variableHeader = Data()
-        variableHeader.append(contentsOf: encodeString("MQTT"))
+        variableHeader.append(contentsOf: self.encodeString("MQTT"))
         variableHeader.append(4)
         
         var connectFlags: UInt8 = 0x00
@@ -1228,13 +1305,13 @@ class MQTTManager: NSObject {
         variableHeader.append(contentsOf: [0x03, 0x84])
         
         var payload = Data()
-        payload.append(contentsOf: encodeString("stats-\(username)"))
-        payload.append(contentsOf: encodeString(username))
-        payload.append(contentsOf: encodeString(password))
+        payload.append(contentsOf: self.encodeString("stats-\(username)"))
+        payload.append(contentsOf: self.encodeString(username))
+        payload.append(contentsOf: self.encodeString(password))
         
         let remainingLength = variableHeader.count + payload.count
         packet.append(fixedHeaderByte)
-        packet.append(contentsOf: encodeRemainingLength(remainingLength))
+        packet.append(contentsOf: self.encodeRemainingLength(remainingLength))
         packet.append(variableHeader)
         packet.append(payload)
         
@@ -1247,12 +1324,12 @@ class MQTTManager: NSObject {
         let fixedHeaderByte = (MQTTPacketType.publish.rawValue << 4) | (retain ? 0x01 : 0x00)
         
         var variableHeader = Data()
-        variableHeader.append(contentsOf: encodeString(topic))
+        variableHeader.append(contentsOf: self.encodeString(topic))
         
         let remainingLength = variableHeader.count + payload.count
         
         packet.append(fixedHeaderByte)
-        packet.append(contentsOf: encodeRemainingLength(remainingLength))
+        packet.append(contentsOf: self.encodeRemainingLength(remainingLength))
         packet.append(variableHeader)
         packet.append(payload)
         
@@ -1270,13 +1347,13 @@ class MQTTManager: NSObject {
         variableHeader.append(contentsOf: [UInt8(packetId >> 8), UInt8(packetId & 0xFF)])
         
         var payload = Data()
-        payload.append(contentsOf: encodeString(topic))
+        payload.append(contentsOf: self.encodeString(topic))
         payload.append(0x00)
         
         let remainingLength = variableHeader.count + payload.count
         
         packet.append(fixedHeaderByte)
-        packet.append(contentsOf: encodeRemainingLength(remainingLength))
+        packet.append(contentsOf: self.encodeRemainingLength(remainingLength))
         packet.append(variableHeader)
         packet.append(payload)
         

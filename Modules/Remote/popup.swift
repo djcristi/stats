@@ -46,7 +46,11 @@ internal enum RemoteItem {
 }
 
 internal class Popup: PopupWrapper {
-    private let loginPrompt = EmptyView(height: 60, msg: localizedString("Login to System Stats to see your devices"))
+    internal var loadCallback: (() -> Void)?
+    private var checkedAt: [String: String] = [:]
+    private var metrics: [String: RemotePreview] = [:]
+    private var hostHistory: [String: GridChartData] = [:]
+    private var loginPrompt: EmptyView? = nil
     
     private var groups: NSStackView = {
         let view = NSStackView()
@@ -55,8 +59,10 @@ internal class Popup: PopupWrapper {
         return view
     }()
     
+    private var authorized: Bool = SystemStats.shared.isAuthorized
+    private var snapshot: RemoteSnapshot?
     private var visible: Bool = false
-    private var streams: [String: RemoteMachineStream] = [:]
+    private var streams: [[String]: RemoteMachineStream] = [:]
     private var currentMachineIDs: [String] = []
     
     public init(_ module: ModuleType) {
@@ -80,14 +86,40 @@ internal class Popup: PopupWrapper {
         }
     }
     
+    public override func loadContent() {
+        self.loginPrompt = EmptyView(height: 60, msg: localizedString("Login to System Stats to see your devices"))
+        self.authorizationStatus(self.authorized)
+        if let snapshot = self.snapshot {
+            self.render(snapshot)
+        }
+    }
+    
+    public override func unloadContent() {
+        self.loginPrompt = nil
+        self.groups.subviews.forEach { $0.removeFromSuperview() }
+    }
+    
     public func authorizationStatus(_ status: Bool) {
+        self.authorized = status
         if !status {
             self.stopStreams()
-            self.addArrangedSubview(self.loginPrompt)
+            self.snapshot = nil
+            self.currentMachineIDs = []
+            self.metrics.removeAll()
+            self.hostHistory.removeAll()
+            self.checkedAt.removeAll()
+            self.groups.subviews.forEach { $0.removeFromSuperview() }
+        }
+        guard self.contentLoaded else { return }
+        if !status {
+            if let loginPrompt = self.loginPrompt {
+                self.addArrangedSubview(loginPrompt)
+            }
             self.groups.removeFromSuperview()
         } else {
-            self.loginPrompt.removeFromSuperview()
+            self.loginPrompt?.removeFromSuperview()
             self.addArrangedSubview(self.groups)
+            if self.visible { self.loadCallback?() }
             self.syncStreams()
         }
         self.recalculateHeight()
@@ -95,7 +127,9 @@ internal class Popup: PopupWrapper {
     
     public override func appear() {
         super.appear()
+        guard !self.visible else { return }
         self.visible = true
+        self.loadCallback?()
         self.syncStreams()
     }
     
@@ -106,19 +140,22 @@ internal class Popup: PopupWrapper {
     }
     
     private func syncStreams() {
-        guard self.visible else { return }
-        let ids = Set(self.currentMachineIDs)
-        
-        for (id, stream) in self.streams where !ids.contains(id) {
+        guard self.visible, self.authorized else { return }
+        let ids = self.currentMachineIDs
+        let limit = RemoteMachineStream.maxMachines
+        let batches = stride(from: 0, to: ids.count, by: limit).map { start in
+            Array(ids[start..<min(start + limit, ids.count)])
+        }
+        for (batch, stream) in self.streams where !batches.contains(batch) {
             stream.stop()
-            self.streams.removeValue(forKey: id)
+            self.streams.removeValue(forKey: batch)
         }
         
-        for id in ids where self.streams[id] == nil {
-            let stream = RemoteMachineStream(machineID: id) { [weak self] update in
-                self?.apply(update, for: id)
+        for batch in batches where self.streams[batch] == nil {
+            let stream = RemoteMachineStream(machineIDs: batch) { [weak self] id, preview, snapshot in
+                self?.apply(preview, for: id, snapshot: snapshot)
             }
-            self.streams[id] = stream
+            self.streams[batch] = stream
             stream.start()
         }
     }
@@ -128,30 +165,43 @@ internal class Popup: PopupWrapper {
         self.streams.removeAll()
     }
     
-    private func apply(_ update: RemoteUpdate, for id: String) {
-        _ = self.groups.arrangedSubviews.compactMap { $0 as? GroupView }.first { $0.apply(update, for: id) }
+    private func apply(_ preview: RemotePreview, for id: String, snapshot: Bool) {
+        let previous = snapshot ? nil : self.metrics[id]
+        let merged = RemotePreview(cpu: preview.cpu ?? previous?.cpu, ram: preview.ram ?? previous?.ram)
+        self.metrics[id] = merged
+        for group in self.groups.arrangedSubviews.compactMap({ $0 as? GroupView }) {
+            if let row = group.machineRow(id) {
+                row.updateMetrics(merged)
+                break
+            }
+        }
     }
     
     internal func callback(_ snapshot: RemoteSnapshot) {
+        self.snapshot = snapshot
+        let machineIDs = Set(snapshot.machines.map { $0.id })
+        self.metrics = self.metrics.filter { machineIDs.contains($0.key) }
+        let ids = Set(snapshot.hosts.map { $0.id })
+        self.hostHistory = self.hostHistory.filter { ids.contains($0.key) }
+        self.checkedAt = self.checkedAt.filter { ids.contains($0.key) }
+        snapshot.hosts.forEach { host in
+            let history = self.hostHistory[host.id] ?? GridChartData(capacity: 24)
+            self.hostHistory[host.id] = history
+            guard let ts = host.checkTimestamp, self.checkedAt[host.id] != ts else { return }
+            self.checkedAt[host.id] = ts
+            history.append(host.lastStatus?.lowercased() == "up")
+        }
+        guard self.contentLoaded else { return }
+        self.render(snapshot)
+    }
+    
+    private func render(_ snapshot: RemoteSnapshot) {
         let enabledMachines = snapshot.machines.filter { $0.state }
         let enabledHosts = snapshot.hosts.filter { $0.state }
         
-        let mi = Dictionary(snapshot.order.machines.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
-        let hi = Dictionary(snapshot.order.hosts.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         let groupById = Dictionary(snapshot.groups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        
-        let sortedMachines = enabledMachines.sorted { a, b in
-            let ia = mi[a.id] ?? Int.max
-            let ib = mi[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
-        }
-        let sortedHosts = enabledHosts.sorted { a, b in
-            let ia = hi[a.id] ?? Int.max
-            let ib = hi[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
-        }
+        let sortedMachines = enabledMachines.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        let sortedHosts = enabledHosts.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         
         var machinesByGroup: [String: [RemoteMachine]] = [:]
         var ungroupedMachines: [RemoteMachine] = []
@@ -165,7 +215,7 @@ internal class Popup: PopupWrapper {
         var hostsByGroup: [String: [RemoteHost]] = [:]
         var ungroupedHosts: [RemoteHost] = []
         for h in sortedHosts {
-            if let gid = h.group, !gid.isEmpty, groupById[gid] != nil {
+            if let gid = h.displayGroupID, !gid.isEmpty, groupById[gid] != nil {
                 hostsByGroup[gid, default: []].append(h)
             } else {
                 ungroupedHosts.append(h)
@@ -194,11 +244,11 @@ internal class Popup: PopupWrapper {
         // 2. Add new / update existing
         groups.forEach { sector in
             if let view = self.groups.subviews.compactMap({ $0 as? GroupView }).first(where: { $0.id == sector.id }) {
-                view.update(title: sector.title, machines: sector.machines, hosts: sector.hosts)
+                view.update(title: sector.title, machines: sector.machines, hosts: sector.hosts, history: self.hostHistory, metrics: self.metrics)
             } else {
                 let view = GroupView(id: sector.id, title: sector.title)
                 view.sizeCallback = { [weak self] in self?.recalculateHeight() }
-                view.update(title: sector.title, machines: sector.machines, hosts: sector.hosts)
+                view.update(title: sector.title, machines: sector.machines, hosts: sector.hosts, history: self.hostHistory, metrics: self.metrics)
                 self.groups.addArrangedSubview(view)
             }
         }
@@ -211,7 +261,7 @@ internal class Popup: PopupWrapper {
             }
         }
         
-        self.currentMachineIDs = sortedMachines.map { $0.id }
+        self.currentMachineIDs = enabledMachines.map { $0.id }.sorted()
         self.syncStreams()
         
         self.recalculateHeight()
@@ -227,9 +277,6 @@ private class GroupView: NSStackView {
     private let statusDot = DotView(color: .tertiaryLabelColor)
     private let chevron = NSImageView()
     private var collapsed: Bool = true
-    
-    private var currentMachines: [RemoteMachine] = []
-    private var currentHosts: [RemoteHost] = []
     
     private let body: NSStackView = {
         let v = NSStackView()
@@ -298,7 +345,7 @@ private class GroupView: NSStackView {
     }
     
     override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+        self.layer?.backgroundColor = (self.isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
     }
     
     @objc private func toggleCollapse() {
@@ -313,10 +360,8 @@ private class GroupView: NSStackView {
         self.chevron.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
     }
     
-    public func update(title: String?, machines: [RemoteMachine], hosts: [RemoteHost]) {
+    public func update(title: String?, machines: [RemoteMachine], hosts: [RemoteHost], history: [String: GridChartData], metrics: [String: RemotePreview]) {
         if let titleLabel, let title { titleLabel.stringValue = title }
-        self.currentMachines = machines
-        self.currentHosts = hosts
         self.statusDot.setColor(self.aggregateColor(machines: machines, hosts: hosts))
         
         let items: [RemoteItem] = machines.map { .machine($0) } + hosts.map { .host($0) }
@@ -327,26 +372,24 @@ private class GroupView: NSStackView {
         items.enumerated().forEach { (index, item) in
             let view: RemoteItemView
             if let existing = self.body.subviews.compactMap({ $0 as? RemoteItemView }).first(where: { $0.id == item.id }) {
-                existing.update(item)
                 view = existing
             } else {
-                view = RemoteItemView(item)
+                if case .host(let host) = item {
+                    view = RemoteItemView(item, history: history[host.id])
+                } else {
+                    view = RemoteItemView(item)
+                }
                 self.body.addArrangedSubview(view)
             }
+            view.update(item, metrics: metrics)
             self.body.removeArrangedSubview(view)
             self.body.insertArrangedSubview(view, at: index)
             view.setLast(index == items.count - 1)
         }
     }
     
-    @discardableResult
-    public func apply(_ update: RemoteUpdate, for id: String) -> Bool {
-        guard let index = self.currentMachines.firstIndex(where: { $0.id == id }) else { return false }
-        let merged = self.currentMachines[index].applying(update)
-        self.currentMachines[index] = merged
-        self.body.arrangedSubviews.compactMap { $0 as? RemoteItemView }.first { $0.id == RemoteItem.machine(merged).id }?.update(.machine(merged))
-        self.statusDot.setColor(self.aggregateColor(machines: self.currentMachines, hosts: self.currentHosts))
-        return true
+    fileprivate func machineRow(_ id: String) -> RemoteItemView? {
+        self.body.arrangedSubviews.compactMap { $0 as? RemoteItemView }.first { $0.id == "machine-" + id }
     }
     
     private func aggregateColor(machines: [RemoteMachine], hosts: [RemoteHost]) -> NSColor {
@@ -377,12 +420,13 @@ private class RemoteItemView: NSStackView {
     private let ramLabel = TextView()
     private let ramBar = BarChartView(horizontal: true)
     
-    private let grid = GridChartView(grid: (24, 1))
+    private let grid: GridChartView
     
     private let separator = RemoteSeparator()
     private var heightConstraint: NSLayoutConstraint?
     
-    public init(_ item: RemoteItem) {
+    public init(_ item: RemoteItem, history: GridChartData? = nil) {
+        self.grid = GridChartView(grid: (24, 1), history: history)
         self.id = item.id
         
         super.init(frame: NSRect(x: 0, y: 0, width: Constants.Popup.width, height: 53))
@@ -499,12 +543,17 @@ private class RemoteItemView: NSStackView {
         return view
     }
     
-    public func update(_ item: RemoteItem) {
+    public func update(_ item: RemoteItem, metrics: [String: RemotePreview]) {
+        self.grid.historyUpdated()
         self.labelField.stringValue = item.name
         
         switch item {
         case .machine(let machine):
             self.dot.setColor(machine.online ? .systemGreen : .systemRed)
+            if let preview = metrics[machine.id] {
+                self.updateMetrics(preview)
+                return
+            }
             
             if let cpu = machine.modules?.cpuUsage {
                 self.cpuLabel.stringValue = "\(Int(cpu.rounded(toPlaces: 2) * 100))%"
@@ -522,8 +571,14 @@ private class RemoteItemView: NSStackView {
             }
         case .host(let host):
             self.dot.setColor(host.color)
-            self.grid.addValue(host.lastStatus?.lowercased() == "up")
         }
+    }
+    
+    fileprivate func updateMetrics(_ preview: RemotePreview) {
+        self.cpuLabel.stringValue = preview.cpu ?? "—"
+        self.ramLabel.stringValue = preview.ram ?? "—"
+        self.cpuBar.setValue(ColorValue((Double(preview.cpu?.dropLast() ?? "") ?? 0) / 100))
+        self.ramBar.setValue(ColorValue((Double(preview.ram?.dropLast() ?? "") ?? 0) / 100))
     }
     
     public func setLast(_ isLast: Bool) {

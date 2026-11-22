@@ -65,8 +65,6 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
             }
         }
         
-        self.popup = PopupWindow(title: "Combined modules", module: .combined, view: Popup()) { _ in }
-        
         if self.status {
             self.enable()
         }
@@ -76,9 +74,9 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
             return self.handleAlternateClick(event)
         }
         
-        NotificationCenter.default.addObserver(self, selector: #selector(listenForStateChange), name: .toggleOneView, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(listenForStateChange), name: .pause, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(listenForModuleRearrrange), name: .moduleRearrange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(self.listenForStateChange), name: .toggleOneView, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(self.listenForStateChange), name: .pause, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(self.listenForModuleRearrrange), name: .moduleRearrange, object: nil)
     }
     
     deinit {
@@ -237,7 +235,12 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
     }
     
     private func togglePopup() {
-        guard let popup = self.popup, let item = self.menuBarItem, let window = item.button?.window else { return }
+        guard let item = self.menuBarItem, let window = item.button?.window else { return }
+        
+        if self.popup == nil {
+            self.popup = PopupWindow(title: "Combined modules", module: .combined, view: Popup()) { _ in }
+        }
+        guard let popup = self.popup else { return }
         
         if popup.occlusionState.rawValue == 8192 {
             popup.contentView?.invalidateIntrinsicContentSize()
@@ -451,7 +454,7 @@ private class Popup: NSStackView, Popup_p {
         
         self.reinit()
         
-        NotificationCenter.default.addObserver(self, selector: #selector(reinit), name: .toggleModule, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(self.reinit), name: .toggleModule, object: nil)
     }
     
     required init?(coder: NSCoder) {

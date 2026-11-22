@@ -14,12 +14,15 @@ import Kit
 
 internal class Popup: PopupWrapper {
     private var list: [String: NSView] = [:]
+    private var chartHistory: [String: LineChartData] = [:]
+    private var fanViews: [String: FanView] = [:]
     
     private var unknownSensorsState: Bool { Store.shared.bool(key: "Sensors_unknown", defaultValue: false) }
     private var fanValueState: FanValue = .percentage
     
     private var sensors: [Sensor_p] = []
     private let settingsView: NSStackView = NSStackView()
+    private var settingsLoaded: Bool = false
     private let sensorsCache = PopupCache<[Sensor_p]>()
     
     private var fanControlState: Bool {
@@ -47,7 +50,7 @@ internal class Popup: PopupWrapper {
         ]))
         
         self.settingsView.addArrangedSubview(PreferencesSection([
-            PreferencesRow(localizedString("Fan value"), component: selectView(
+            PreferencesRow(localizedString("Fan value"), component: self.selectView(
                 action: #selector(self.toggleFanValue),
                 items: FanValues,
                 selected: self.fanValueState.rawValue
@@ -64,7 +67,7 @@ internal class Popup: PopupWrapper {
     
     #if arch(arm64)
     @objc private func checkFanModesAndResetFtst() {
-        let fanViews = self.list.values.compactMap { $0 as? FanView }
+        let fanViews = Array(self.fanViews.values)
         guard !fanViews.isEmpty else { return }
         guard fanViews.allSatisfy({ $0.fan.mode.isAutomatic }) else { return }
         SMCHelper.shared.resetFanControl()
@@ -75,20 +78,41 @@ internal class Popup: PopupWrapper {
         fatalError("init(coder:) has not been implemented")
     }
     
+    public override func loadContent() {
+        self.setup(reload: true)
+    }
+    
+    public override func unloadContent() {
+        self.fanViews.values.forEach { $0.unloadContent() }
+        self.list.removeAll()
+    }
+    
     internal func setup(_ values: [Sensor_p]? = nil, reload: Bool = false) {
         guard let values = reload ? self.sensors : values else { return }
         let fans = values.filter({ $0.type == .fan && $0.popupState })
+        if !reload {
+            self.sensors = values
+            let keys = Set(values.map { $0.key })
+            self.chartHistory = self.chartHistory.filter { keys.contains($0.key) }
+            if self.settingsLoaded { self.loadSettings() }
+        }
+        let keys = Set(fans.filter({ !$0.isComputed }).map { $0.key })
+        self.fanViews = self.fanViews.filter { keys.contains($0.key) }
+        fans.compactMap { $0 as? Fan }.filter { !$0.isComputed }.forEach { fan in
+            if let view = self.fanViews[fan.key] {
+                if !reload { view.fan = fan }
+            } else {
+                self.fanViews[fan.key] = FanView(fan, width: self.frame.width) {}
+            }
+        }
+        guard self.contentLoaded else { return }
+        self.list.removeAll()
         var sensors = values
         if !self.unknownSensorsState {
             sensors = sensors.filter({ $0.group != .unknown })
         }
         
         self.subviews.forEach({ $0.removeFromSuperview() })
-        if !reload {
-            self.settingsView.subviews.filter({ $0.identifier == NSUserInterfaceItemIdentifier("sensor") }).forEach { v in
-                v.removeFromSuperview()
-            }
-        }
         
         if !fans.isEmpty {
             let separator = SeparatorView(
@@ -111,13 +135,16 @@ internal class Popup: PopupWrapper {
                         self.list[fan.key] = sensor
                         container.addArrangedSubview(sensor)
                     } else {
-                        let view = FanView(fan, width: self.frame.width) { [weak self] in
+                        guard let view = self.fanViews[fan.key] else { return }
+                        view.sizeCallback = { [weak self, weak container] in
+                            guard let container else { return }
                             let h = container.arrangedSubviews.map({ $0.bounds.height + container.spacing }).reduce(0, +) - container.spacing
                             if container.frame.size.height != h && h >= 0 {
                                 container.setFrameSize(NSSize(width: container.frame.width, height: h))
                             }
                             self?.recalculateHeight()
                         }
+                        view.loadContent()
                         self.list[fan.key] = view
                         container.addArrangedSubview(view)
                     }
@@ -163,22 +190,6 @@ internal class Popup: PopupWrapper {
                 }
             }
             
-            if !reload {
-                let section = PreferencesSection(title: localizedString(typ.rawValue))
-                section.identifier = NSUserInterfaceItemIdentifier("sensor")
-                groups.forEach { (group: SensorGroup) in
-                    filtered.filter{ $0.group == group }.forEach { (s: Sensor_p) in
-                        let btn = switchView(
-                            action: #selector(self.toggleSensor),
-                            state: s.popupState
-                        )
-                        btn.identifier = NSUserInterfaceItemIdentifier(rawValue: s.key)
-                        section.add(PreferencesRow(localizedString(s.name), component: btn))
-                    }
-                }
-                self.settingsView.addArrangedSubview(section)
-            }
-            
             if typ == .fan { return }
             filtered = filtered.filter{ $0.popupState }
             filtered = filtered.filter { !barSensorKeys.contains($0.key) }
@@ -187,7 +198,9 @@ internal class Popup: PopupWrapper {
             self.addArrangedSubview(separatorView(localizedString(typ.rawValue), width: self.frame.width))
             groups.forEach { (group: SensorGroup) in
                 filtered.filter{ $0.group == group }.forEach { (s: Sensor_p) in
-                    let sensor = SensorView(s, width: self.frame.width) { [weak self] in
+                    let history = self.chartHistory[s.key] ?? LineChartData(capacity: 120)
+                    self.chartHistory[s.key] = history
+                    let sensor = SensorView(s, width: self.frame.width, history: history) { [weak self] in
                         self?.recalculateHeight()
                     }
                     self.addArrangedSubview(sensor)
@@ -196,20 +209,24 @@ internal class Popup: PopupWrapper {
             }
         }
         
-        if !reload {
-            self.sensors = values
-        }
         self.recalculateHeight()
     }
     
     internal func usageCallback(_ values: [Sensor_p]) {
+        let date = Date()
         DispatchQueue.main.async(execute: {
             values.filter({ $0 is Sensor }).forEach { (s: Sensor_p) in
+                let sample = DoubleValue(s.localValue/100, at: date)
+                let history = self.chartHistory[s.key] ?? LineChartData(capacity: 120)
+                self.chartHistory[s.key] = history
+                history.append(sample)
                 if let sensor = self.list[s.key] as? SensorView {
-                    sensor.addHistoryPoint(s)
+                    sensor.historyUpdated(s)
                 }
             }
             
+            self.sensorsCache.value = values
+            guard self.contentLoaded else { return }
             self.sensorsCache.apply(values, visible: self.window?.isVisible ?? false, render: self.renderSensors)
         })
     }
@@ -244,7 +261,49 @@ internal class Popup: PopupWrapper {
     // MARK: - Settings
     
     public override func settings() -> NSView? {
-        self.settingsView
+        if !self.settingsLoaded {
+            self.loadSettings()
+            self.settingsLoaded = true
+        }
+        return self.settingsView
+    }
+    
+    private func loadSettings() {
+        self.settingsView.subviews.filter({ $0.identifier == NSUserInterfaceItemIdentifier("sensor") }).forEach { v in
+            v.removeFromSuperview()
+        }
+        
+        let sensors = self.sensors.filter({ self.unknownSensorsState || $0.group != .unknown })
+        var types: [SensorType] = []
+        sensors.forEach { (s: Sensor_p) in
+            if !types.contains(s.type) {
+                types.append(s.type)
+            }
+        }
+        
+        types.forEach { (typ: SensorType) in
+            let filtered = sensors.filter{ $0.type == typ }
+            var groups: [SensorGroup] = []
+            filtered.forEach { (s: Sensor_p) in
+                if !groups.contains(s.group) {
+                    groups.append(s.group)
+                }
+            }
+            
+            let section = PreferencesSection(title: localizedString(typ.rawValue))
+            section.identifier = NSUserInterfaceItemIdentifier("sensor")
+            groups.forEach { (group: SensorGroup) in
+                filtered.filter{ $0.group == group }.forEach { (s: Sensor_p) in
+                    let btn = self.switchView(
+                        action: #selector(self.toggleSensor),
+                        state: s.popupState
+                    )
+                    btn.identifier = NSUserInterfaceItemIdentifier(rawValue: s.key)
+                    section.add(PreferencesRow(localizedString(s.name), component: btn))
+                }
+            }
+            self.settingsView.addArrangedSubview(section)
+        }
     }
     
     @objc private func toggleFanValue(_ sender: NSMenuItem) {
@@ -275,7 +334,9 @@ internal class SensorView: NSStackView {
     public var showsBarLetter: Bool = false
 
     private var valueView: ValueSensorView!
-    private var chartView: ChartSensorView!
+    private var chartView: ChartSensorView? = nil
+    private var chartSuffix: String
+    private let history: LineChartData
     
     private var openned: Bool = false
     
@@ -283,8 +344,10 @@ internal class SensorView: NSStackView {
         FanValue(rawValue: Store.shared.string(key: "Sensors_popup_fanValue", defaultValue: FanValue.percentage.rawValue)) ?? .percentage
     }
     
-    public init(_ sensor: Sensor_p, width: CGFloat, toggleable: Bool = true, callback: @escaping (() -> Void)) {
+    public init(_ sensor: Sensor_p, width: CGFloat, toggleable: Bool = true, history: LineChartData = LineChartData(capacity: 120), callback: @escaping (() -> Void)) {
+        self.history = history
         self.sizeCallback = callback
+        self.chartSuffix = sensor.unit
         
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 22))
         
@@ -295,7 +358,6 @@ internal class SensorView: NSStackView {
         self.valueView = ValueSensorView(sensor, width: width, toggleable: toggleable, callback: { [weak self] in
             self?.open()
         })
-        self.chartView = ChartSensorView(width: width, suffix: sensor.unit)
         
         self.addArrangedSubview(self.valueView)
         
@@ -329,15 +391,18 @@ internal class SensorView: NSStackView {
         return letter.isEmpty ? sensor.name : "(\(letter)) \(sensor.name)"
     }
     
-    public func addHistoryPoint(_ sensor: Sensor_p) {
-        self.chartView.update(sensor.localValue, sensor.unit)
+    public func historyUpdated(_ sensor: Sensor_p) {
+        self.chartSuffix = sensor.unit
+        self.chartView?.update(sensor.unit)
     }
     
     private func open() {
         if self.openned {
-            self.chartView.removeFromSuperview()
+            self.chartView?.removeFromSuperview()
         } else {
-            self.addArrangedSubview(self.chartView)
+            let chart = self.chartView ?? ChartSensorView(width: self.frame.width, suffix: self.chartSuffix, history: self.history)
+            self.chartView = chart
+            self.addArrangedSubview(chart)
         }
         self.openned = !self.openned
         
@@ -426,7 +491,7 @@ internal class ChartSensorView: NSStackView {
     private var chart: LineChartView? = nil
     private var currentSuffix: String
     
-    public init(width: CGFloat, suffix: String) {
+    public init(width: CGFloat, suffix: String, history: LineChartData) {
         self.currentSuffix = suffix
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 60))
         
@@ -437,7 +502,7 @@ internal class ChartSensorView: NSStackView {
         self.spacing = 0
         self.layer?.cornerRadius = 3
         
-        self.chart = LineChartView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: self.frame.height), num: 120, scale: .linear)
+        self.chart = LineChartView(frame: NSRect(x: 0, y: 0, width: self.frame.width, height: self.frame.height), scale: .linear, history: history)
         self.chart?.setSuffix(suffix)
         self.chart?.setMinMax(true)
         self.chart?.setAverage(true)
@@ -460,13 +525,13 @@ internal class ChartSensorView: NSStackView {
         self.chart?.display()
     }
     
-    public func update(_ value: Double, _ suffix: String) {
+    public func update(_ suffix: String) {
         guard let chart = self.chart else { return }
         if self.currentSuffix != suffix {
             self.currentSuffix = suffix
             chart.setSuffix(suffix)
         }
-        chart.addValue(value/100)
+        chart.historyUpdated()
     }
 }
 
@@ -489,7 +554,7 @@ internal class FanView: NSStackView {
     private var modeButtons: ModeButtons? = nil
     private var debouncer: DispatchWorkItem? = nil
     
-    private var barView: BarChartView = BarChartView(size: 6, horizontal: true)
+    private var barView: BarChartView? = nil
     
     private var minBtn: NSButton? = nil
     private var maxBtn: NSButton? = nil
@@ -527,10 +592,6 @@ internal class FanView: NSStackView {
         
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 0))
         
-        self.helperView = self.noHelper()
-        self.controlView = self.control()
-        self.buttonsView = self.mode()
-        
         self.orientation = .vertical
         self.alignment = .centerX
         self.distribution = .fillProportionally
@@ -538,9 +599,6 @@ internal class FanView: NSStackView {
         self.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
         self.wantsLayer = true
         self.layer?.cornerRadius = Constants.Popup.radius
-        
-        self.nameAndSpeed()
-        self.setupControls()
         
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(self.wakeListener), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(self.sleepListener), name: NSWorkspace.willSleepNotification, object: nil)
@@ -551,6 +609,7 @@ internal class FanView: NSStackView {
         
         if let fanMode = self.fan.customMode, self.speedState && fanMode != FanMode.automatic {
             SMCHelper.shared.setFanMode(fan.id, mode: fanMode.rawValue)
+            self.fan.mode = fanMode
             self.modeButtons?.setMode(FanMode(rawValue: fanMode.rawValue) ?? .automatic)
             
             self.setSpeed(value: Int(self.speed), then: { [weak self] in
@@ -559,6 +618,33 @@ internal class FanView: NSStackView {
                 }
             })
         }
+    }
+    
+    public func loadContent() {
+        guard self.barView == nil else { return }
+        self.helperView = self.noHelper()
+        self.controlView = self.control()
+        self.buttonsView = self.mode()
+        self.nameAndSpeed()
+        self.setupControls()
+    }
+    
+    public func unloadContent() {
+        self.arrangedSubviews.forEach { self.removeArrangedSubview($0) }
+        self.subviews.forEach { $0.removeFromSuperview() }
+        self.helperView = nil
+        self.controlView = nil
+        self.buttonsView = nil
+        self.valueField = nil
+        self.sliderValueField = nil
+        self.slider = nil
+        self.modeButtons = nil
+        self.barView = nil
+        self.minBtn = nil
+        self.maxBtn = nil
+        self.helperButton = nil
+        self.ready = false
+        self.sizeCallback = {}
     }
     
     required init?(coder: NSCoder) {
@@ -595,11 +681,13 @@ internal class FanView: NSStackView {
         valueField.toolTip = "\(value)"
         
         let percentage = self.fan.percentage < 0 ? 0 : self.fan.percentage
-        self.barView.widthAnchor.constraint(equalToConstant: 110).isActive = true
-        self.barView.setValue(ColorValue(Double(percentage) / 100))
+        let barView = BarChartView(size: 6, horizontal: true)
+        barView.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        barView.setValue(ColorValue(Double(percentage) / 100))
         
         row.addArrangedSubview(nameField)
-        row.addArrangedSubview(self.barView)
+        row.addArrangedSubview(barView)
+        self.barView = barView
         row.addArrangedSubview(valueField)
         
         self.valueField = valueField
@@ -619,7 +707,7 @@ internal class FanView: NSStackView {
         container.distribution = .fillProportionally
         container.spacing = 0
         container.wantsLayer = true
-        container.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 225/255, green: 225/255, blue: 225/255, alpha: 1)).cgColor
+        container.layer?.backgroundColor = (self.isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 225/255, green: 225/255, blue: 225/255, alpha: 1)).cgColor
         
         let button: NSButton = NSButton()
         button.isBordered = false
@@ -895,7 +983,7 @@ internal class FanView: NSStackView {
         
         self.willSleepMode = mode
         self.willSleepSpeed = self.fan.customSpeed
-        SMCHelper.shared.setFanMode(fan.id, mode: FanMode.automatic.rawValue)
+        SMCHelper.shared.setFanMode(self.fan.id, mode: FanMode.automatic.rawValue)
         self.modeButtons?.setMode(.automatic)
     }
     
@@ -934,10 +1022,10 @@ internal class FanView: NSStackView {
                 self.valueField?.toolTip = value.formattedValue
                 
                 let percentage = value.percentage < 0 ? 0 : value.percentage
-                self.barView.setValue(ColorValue(Double(percentage) / 100))
+                self.barView?.setValue(ColorValue(Double(percentage) / 100))
                 
                 if self.resetModeAfterSleep && !value.mode.isAutomatic {
-                    if self.sliderValueField?.stringValue != "" && self.slider?.doubleValue != value.value {
+                    if self.sliderValueField?.stringValue.isEmpty != true && self.slider?.doubleValue != value.value {
                         self.slider?.doubleValue = value.value
                         self.sliderValueField?.stringValue = ""
                     }
@@ -967,6 +1055,8 @@ internal class FanView: NSStackView {
     }
     
     @objc private func openLoginItems() {
+        guard #available(macOS 13, *) else { return }
+        (self.window as? PopupWindow)?.dismissIfUnlocked()
         SMCHelper.shared.openLoginItems()
     }
     
@@ -983,7 +1073,7 @@ internal class FanView: NSStackView {
         alert.addButton(withTitle: localizedString("Cancel"))
         
         if alert.runModal() == .alertFirstButtonReturn {
-            SMCHelper.shared.openLoginItems()
+            self.openLoginItems()
         }
     }
     
@@ -995,7 +1085,7 @@ internal class FanView: NSStackView {
         alert.addButton(withTitle: localizedString("Cancel"))
         
         if alert.runModal() == .alertFirstButtonReturn {
-            SMCHelper.shared.openLoginItems()
+            self.openLoginItems()
         }
     }
     
@@ -1082,8 +1172,8 @@ private class ModeButtons: NSStackView {
     public init(frame: NSRect, mode: FanMode) {
         self.modes = .init(mode)
         
-        self.offBtn = NSButton(image: iconFromSymbol(name: "nosign", scale: .medium), target: nil, action: #selector(offMode))
-        self.turboBtn = NSButton(image: iconFromSymbol(name: "snowflake", scale: .large), target: nil, action: #selector(turboMode))
+        self.offBtn = NSButton(image: iconFromSymbol(name: "nosign", scale: .medium), target: nil, action: #selector(self.offMode))
+        self.turboBtn = NSButton(image: iconFromSymbol(name: "snowflake", scale: .large), target: nil, action: #selector(self.turboMode))
         
         super.init(frame: frame)
         
@@ -1121,7 +1211,7 @@ private class ModeButtons: NSStackView {
         self.turboBtn.isBordered = false
         self.turboBtn.target = self
         
-        self.addArrangedSubview(modes)
+        self.addArrangedSubview(self.modes)
         self.addArrangedSubview(self.offBtn)
         self.addArrangedSubview(self.turboBtn)
         
@@ -1133,7 +1223,7 @@ private class ModeButtons: NSStackView {
             self.turboBtn.heightAnchor.constraint(equalToConstant: self.frame.height)
         ])
         
-        NotificationCenter.default.addObserver(self, selector: #selector(syncFanMode), name: .syncFansControl, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(self.syncFanMode), name: .syncFansControl, object: nil)
     }
     
     required init?(coder: NSCoder) {
@@ -1145,7 +1235,7 @@ private class ModeButtons: NSStackView {
     }
     
     override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+        self.layer?.backgroundColor = (self.isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
     }
     
     @objc private func offMode(_ sender: NSButton) {
@@ -1244,7 +1334,7 @@ private class ModeSwitch: NSStackView {
     public var manualCallback: (() -> Void)?
     
     private var autoBtn: NSButton = {
-        let button: NSButton = NSButton(title: localizedString("Automatic"), target: nil, action: #selector(autoMode))
+        let button: NSButton = NSButton(title: localizedString("Automatic"), target: nil, action: #selector(ModeSwitch.autoMode))
         button.setButtonType(.toggle)
         button.isBordered = false
         button.wantsLayer = true
@@ -1258,7 +1348,7 @@ private class ModeSwitch: NSStackView {
     }()
     
     private var manualBtn: NSButton = {
-        let button: NSButton = NSButton(title: localizedString("Manual"), target: nil, action: #selector(manualMode))
+        let button: NSButton = NSButton(title: localizedString("Manual"), target: nil, action: #selector(ModeSwitch.manualMode))
         button.setButtonType(.toggle)
         button.isBordered = false
         button.wantsLayer = true
@@ -1272,7 +1362,7 @@ private class ModeSwitch: NSStackView {
     }()
     
     private var selectedColor: CGColor {
-        (isDarkMode ? NSColor(red: 95/255, green: 95/255, blue: 95/255, alpha: 1) : .textBackgroundColor).cgColor
+        (self.isDarkMode ? NSColor(red: 95/255, green: 95/255, blue: 95/255, alpha: 1) : .textBackgroundColor).cgColor
     }
     
     init(_ mode: FanMode) {
@@ -1308,7 +1398,7 @@ private class ModeSwitch: NSStackView {
     }
     
     override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 225/255, green: 225/255, blue: 225/255, alpha: 1)).cgColor
+        self.layer?.backgroundColor = (self.isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 225/255, green: 225/255, blue: 225/255, alpha: 1)).cgColor
         self.autoBtn.layer?.backgroundColor = self.autoBtn.state == .on ? self.selectedColor : NSColor.clear.cgColor
         self.manualBtn.layer?.backgroundColor = self.manualBtn.state == .on ? self.selectedColor : NSColor.clear.cgColor
     }

@@ -13,7 +13,8 @@ import Cocoa
 import Kit
 
 internal class Popup: PopupWrapper {
-    private let orderTableView: OrderTableView = OrderTableView()
+    private lazy var orderTableView: OrderTableView = OrderTableView()
+    private var settingsLoaded: Bool = false
     private var list: [Clock_t] = []
     private let cache = PopupCache<[Clock_t]>()
     
@@ -29,17 +30,18 @@ internal class Popup: PopupWrapper {
         
         self.calendarState = Store.shared.bool(key: "\(self.title)_calendar", defaultValue: self.calendarState)
         self.weekNumbersState = Store.shared.bool(key: "\(self.title)_calendarWeekNumbers", defaultValue: self.weekNumbersState)
+    }
+    
+    public override func loadContent() {
         self.calendarView = CalendarView(self.frame.width, showWeekNumbers: self.weekNumbersState)
-        
-        self.orderTableView.reorderCallback = { [weak self] in
-            self?.rearrange()
-        }
-        
         if let calendar = self.calendarView, self.calendarState {
             self.addArrangedSubview(calendar)
         }
-        
         self.recalculateHeight()
+    }
+    
+    public override func unloadContent() {
+        self.calendarView = nil
     }
     
     required init?(coder: NSCoder) {
@@ -47,12 +49,13 @@ internal class Popup: PopupWrapper {
     }
     
     internal func callback(_ list: [Clock_t]) {
-        if list.count != self.orderTableView.list.count || self.orderTableView.window?.isVisible ?? false {
+        if self.settingsLoaded && (list.count != self.orderTableView.list.count || self.orderTableView.window?.isVisible ?? false) {
             self.orderTableView.list = list.sorted(by: { $0.popupIndex < $1.popupIndex })
             self.orderTableView.update()
         }
         
-        self.cache.apply(list, visible: self.window?.isVisible ?? false, render: self.render)
+        self.list = list
+        self.apply(list, to: self.cache, render: self.render)
     }
     
     private func render(_ list: [Clock_t]) {
@@ -73,8 +76,6 @@ internal class Popup: PopupWrapper {
                 self.addArrangedSubview(ClockView(width: self.frame.width, clock: c))
             }
         }
-        
-        self.list = sorted
     }
     
     private func recalculateHeight() {
@@ -86,6 +87,12 @@ internal class Popup: PopupWrapper {
     }
     
     public override func settings() -> NSView? {
+        self.settingsLoaded = true
+        self.orderTableView.list = self.list.sorted(by: { $0.popupIndex < $1.popupIndex })
+        self.orderTableView.update()
+        self.orderTableView.reorderCallback = { [weak self] in
+            self?.rearrange()
+        }
         let view = SettingsContainerView()
         
         view.addArrangedSubview(PreferencesSection([
@@ -96,11 +103,11 @@ internal class Popup: PopupWrapper {
         ]))
         
         view.addArrangedSubview(PreferencesSection([
-            PreferencesRow(localizedString("Calendar"), component: switchView(
+            PreferencesRow(localizedString("Calendar"), component: self.switchView(
                 action: #selector(self.toggleCalendarState),
                 state: self.calendarState
             )),
-            PreferencesRow(localizedString("Show week numbers"), component: switchView(
+            PreferencesRow(localizedString("Show week numbers"), component: self.switchView(
                 action: #selector(self.toggleWeekNumbersState),
                 state: self.weekNumbersState
             ))
@@ -226,7 +233,7 @@ private class CalendarView: NSStackView {
     }
     
     override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+        self.layer?.backgroundColor = (self.isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
     }
     
     private func setup() {
@@ -240,16 +247,16 @@ private class CalendarView: NSStackView {
         if self.showWeekNumbers {
             headerRow.append(self.weekNumberHeaderItem())
         }
-        headerRow.append(contentsOf: self.weekDays.map { headerItem($0) })
+        headerRow.append(contentsOf: self.weekDays.map { self.headerItem($0) })
         grid.addRow(with: headerRow)
-          
+        
         let weeks = self.generateDays(for: self.month, in: self.year)
         for week in weeks {
             var labels: [NSView] = []
             if self.showWeekNumbers {
                 labels.append(self.weekNumberItem(week))
             }
-            labels.append(contentsOf: week.map { rowItem($0) })
+            labels.append(contentsOf: week.map { self.rowItem($0) })
             grid.addRow(with: labels)
         }
         
@@ -570,6 +577,7 @@ private class CalendarItemView: NSView {
     
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
+            (self.window as? PopupWindow)?.dismissIfUnlocked()
             NSWorkspace.shared.open([], withApplicationAt: self.app, configuration: NSWorkspace.OpenConfiguration())
             return
         }
@@ -676,7 +684,7 @@ internal class ClockView: NSStackView {
     
     override func updateLayer() {
         guard self.background else { return }
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+        self.layer?.backgroundColor = (self.isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
     }
     
     public func update(_ newClock: Clock_t) {
@@ -707,7 +715,7 @@ internal class ClockView: NSStackView {
         self.tzField.stringValue = minutes == 0
             ? "GMT\(sign)\(hours)"
             : String(format: "GMT\(sign)%d:%02d", hours, minutes)
-        
+            
         guard clock.tz != "local" else {
             self.dateField.stringValue = ""
             self.dateField.isHidden = true
@@ -764,7 +772,7 @@ internal class ClockChart: NSView {
         let context = NSGraphicsContext.current!.cgContext
         context.saveGState()
         context.setFillColor(NSColor.controlBackgroundColor.cgColor)
-        context.setStrokeColor((isDarkMode ? NSColor.darkGray : NSColor.lightGray).cgColor)
+        context.setStrokeColor((self.isDarkMode ? NSColor.darkGray : NSColor.lightGray).cgColor)
         context.setLineWidth(1)
         context.addEllipse(in: CGRect(x: 0, y: 0, width: self.frame.width, height: self.frame.height))
         context.drawPath(using: .fillStroke)
@@ -773,8 +781,8 @@ internal class ClockChart: NSView {
         let anchor = CGPoint(x: 0.5, y: 0)
         let center = CGPoint(x: self.frame.size.width / 2, y: self.frame.size.height / 2)
         
-        let hourAngle: CGFloat = CGFloat(Double(hour) * (360.0 / 12.0)) + CGFloat(Double(minute) * (1.0 / 60.0) * (360.0 / 12.0))
-        let minuteAngle: CGFloat = CGFloat(minute) * CGFloat(360.0 / 60.0)
+        let hourAngle: CGFloat = CGFloat(Double(self.hour) * (360.0 / 12.0)) + CGFloat(Double(self.minute) * (1.0 / 60.0) * (360.0 / 12.0))
+        let minuteAngle: CGFloat = CGFloat(self.minute) * CGFloat(360.0 / 60.0)
         let secondsAngle: CGFloat = CGFloat(self.second) * CGFloat(360.0 / 60.0)
         
         self.hourLayer.backgroundColor = NSColor.labelColor.cgColor
@@ -802,7 +810,7 @@ internal class ClockChart: NSView {
         self.layer?.addSublayer(self.secondsLayer)
         
         self.pinLayer.fillColor = NSColor.controlBackgroundColor.cgColor
-        self.pinLayer.strokeColor = (isDarkMode ? NSColor.darkGray : NSColor.lightGray).cgColor
+        self.pinLayer.strokeColor = (self.isDarkMode ? NSColor.darkGray : NSColor.lightGray).cgColor
         self.pinLayer.anchorPoint = anchor
         self.pinLayer.path = CGMutablePath(roundedRect: CGRect(
             x: center.x - 3 / 2,
@@ -851,7 +859,7 @@ private class OrderTableView: NSView, NSTableViewDelegate, NSTableViewDataSource
         self.tableView.dataSource = self
         self.tableView.backgroundColor = NSColor.clear
         self.tableView.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        self.tableView.registerForDraggedTypes([dragDropType])
+        self.tableView.registerForDraggedTypes([self.dragDropType])
         self.tableView.gridColor = .gridColor
         self.tableView.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
         self.tableView.style = .plain
